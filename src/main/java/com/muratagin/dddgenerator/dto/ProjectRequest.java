@@ -7,6 +7,8 @@ public class ProjectRequest {
     private String artifactId;
     private String version;
     private String description;
+    private String javaVersion;
+    private String springBootVersion;
     private List<String> dependencies;
 
     // Constructors
@@ -14,11 +16,14 @@ public class ProjectRequest {
     }
 
     public ProjectRequest(String groupId, String artifactId, String version,
-                          String description, List<String> dependencies) {
+                          String description, String javaVersion, String springBootVersion, 
+                          List<String> dependencies) {
         this.groupId = groupId;
         this.artifactId = artifactId;
         this.version = version;
         this.description = description;
+        this.javaVersion = javaVersion;
+        this.springBootVersion = springBootVersion;
         this.dependencies = dependencies;
     }
 
@@ -53,6 +58,22 @@ public class ProjectRequest {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public String getJavaVersion() {
+        return javaVersion;
+    }
+
+    public void setJavaVersion(String javaVersion) {
+        this.javaVersion = javaVersion;
+    }
+
+    public String getSpringBootVersion() {
+        return springBootVersion;
+    }
+
+    public void setSpringBootVersion(String springBootVersion) {
+        this.springBootVersion = springBootVersion;
     }
 
     public List<String> getDependencies() {

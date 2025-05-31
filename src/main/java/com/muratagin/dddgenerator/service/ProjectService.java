@@ -162,6 +162,7 @@ public class ProjectService {
         <version>%s</version> <!-- Use Spring Boot version from request -->
         <relativePath/>
     </parent>
+    
     <groupId>%s</groupId>
     <artifactId>%s</artifactId>
     <version>%s</version>
@@ -212,45 +213,41 @@ public class ProjectService {
                 <version>${project.version}</version>
             </dependency>
 
-            <!-- Common Dependencies -->
+            <!-- Common Third-Party Dependencies -->
             <dependency>
                 <groupId>org.projectlombok</groupId>
                 <artifactId>lombok</artifactId>
                 <version>${lombok.version}</version>
-                <optional>true</optional>
+                <scope>provided</scope> <!-- Common scope for Lombok -->
             </dependency>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-starter-logging</artifactId>
-            </dependency>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-devtools</artifactId>
-                <scope>runtime</scope>
-                <optional>true</optional>
-            </dependency>
+            <!-- Spring Boot starters like logging and devtools are managed by spring-boot-starter-parent -->
         </dependencies>
     </dependencyManagement>
 
-    <dependencies>
-         <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <optional>true</optional>
-        </dependency>
-    </dependencies>
-    
+    <!-- No direct dependencies needed at root level for child module consumption -->
+    <!-- <dependencies> </dependencies> -->
+
     <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <!-- Version managed by Spring Boot parent POM -->
+                </plugin>
+            </plugins>
+        </pluginManagement>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
+                <!-- Version can be managed by Spring Boot parent or specified here -->
                 <configuration>
                     <annotationProcessorPaths>
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
-                            <version>${lombok.version}</version>
+                            <version>${lombok.version}</version> <!-- Ensure compiler uses the same Lombok version -->
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
@@ -327,6 +324,7 @@ public class ProjectService {
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <!-- Version is inherited from pluginManagement in root POM -->
                 <configuration>
                     <mainClass>${start-class}</mainClass>
                 </configuration>
@@ -342,12 +340,12 @@ public class ProjectService {
     </build>
 </project>
                 """,
-                request.getGroupId(),
-                rootArtifactId,
-                request.getVersion(),
-                containerArtifactId,
-                request.getGroupId(),
-                capitalize(rootArtifactId),
+                request.getGroupId(), // For parent groupId
+                rootArtifactId,       // For parent artifactId
+                request.getVersion(), // For parent version
+                containerArtifactId,  // For self artifactId
+                request.getGroupId(), // For start-class groupId part
+                capitalize(rootArtifactId), // For start-class ApplicationName part
                 request.getGroupId(), rootArtifactId, // domain-core module
                 request.getGroupId(), rootArtifactId, // application-service module
                 request.getGroupId(), rootArtifactId, // application module
@@ -454,7 +452,7 @@ spring:
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <scope>provided</scope> <!-- Lombok is compile-time only -->
+            <!-- Scope and version managed by root POM -->
         </dependency>
     </dependencies>
 </project>
@@ -489,7 +487,7 @@ spring:
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <scope>provided</scope>
+            <!-- Scope and version managed by root POM -->
         </dependency>
         <!-- For DTO validation using @Valid, @NotNull etc. -->
         <dependency>
@@ -568,7 +566,7 @@ spring:
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <scope>provided</scope>
+            <!-- Scope and version managed by root POM -->
         </dependency>
     </dependencies>
 </project>
@@ -608,7 +606,7 @@ spring:
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <scope>provided</scope>
+            <!-- Scope and version managed by root POM -->
         </dependency>
     </dependencies>
 </project>

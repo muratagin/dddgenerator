@@ -81,6 +81,13 @@ public class ProjectService {
         Path applicationYml = Paths.get(containerResources.toString(), "application.yml");
         Files.writeString(applicationYml, generateApplicationYmlContent(rootArtifactId));
 
+        // Create profile-specific application.yml files
+        List<String> profiles = Arrays.asList("local", "dev", "test", "uat", "prod");
+        for (String profile : profiles) {
+            Path profileApplicationYml = Paths.get(containerResources.toString(), "application-" + profile + ".yml");
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(rootArtifactId, profile));
+        }
+
         // 3. Create Domain Module (parent pom for domain-core and application-service)
         String domainParentArtifactId = rootArtifactId + "-domain";
         Path domainModuleDir = Paths.get(tempDir.toString(), domainParentArtifactId);
@@ -501,25 +508,66 @@ public class %s {
 
     private String generateApplicationYmlContent(String rootArtifactId) {
         return String.format("""
+# Default application configuration
+# Activate a specific profile by setting the SPRING_PROFILES_ACTIVE environment variable
+# or by adding --spring.profiles.active={profile} to the command line arguments.
+# Example: java -jar your-app.jar --spring.profiles.active=dev
+
 server:
   port: 8080
 
 spring:
   application:
     name: %s
-  datasource: # Basic datasource example for PostgreSQL
-    url: jdbc:postgresql://localhost:5432/%sdb
-    username: user
-    password: password
+# Common datasource example (can be overridden in profile-specific files)
+#  datasource:
+#    url: jdbc:postgresql://localhost:5432/%sdb
+#    username: user
+#    password: password
+#    driver-class-name: org.postgresql.Driver
+#  jpa:
+#    hibernate:
+#      ddl-auto: update # For dev; use "validate" or "none" in prod
+#    show-sql: true
+#    properties:
+#      hibernate:
+#        format_sql: true
+""", rootArtifactId, rootArtifactId);
+    }
+
+    private String generateProfileApplicationYmlContent(String rootArtifactId, String profile) {
+        String databaseNameSuffix = profile.equals("local") ? "db" : profile + "db";
+        String ddlAuto = "none";
+        if (profile.equals("local") || profile.equals("dev")) {
+            ddlAuto = "update";
+        } else if (profile.equals("test")) {
+            ddlAuto = "create-drop";
+        }
+
+        return String.format("""
+# Configuration for %s environment
+spring:
+  application:
+    name: %s-%s
+  datasource:
+    url: jdbc:postgresql://localhost:5432/%s%s
+    username: %s_user
+    password: password # Change in a real scenario
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
-      ddl-auto: update # For dev; use "validate" or "none" in prod
-    show-sql: true
+      ddl-auto: %s
+    show-sql: %s
     properties:
       hibernate:
-        format_sql: true
-""", rootArtifactId, rootArtifactId);
+        format_sql: %s
+
+environment:
+  name: %s
+""", profile, rootArtifactId, profile, rootArtifactId, databaseNameSuffix, profile, ddlAuto, 
+     (profile.equals("local") || profile.equals("dev") || profile.equals("test") ? "true" : "false"),
+     (profile.equals("local") || profile.equals("dev") || profile.equals("test") ? "true" : "false"),
+     profile);
     }
 
     private String generateDomainParentPomXmlContent(ProjectRequest request, String domainParentArtifactId, String rootArtifactId, String effectiveVersion) {

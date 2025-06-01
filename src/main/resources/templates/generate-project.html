@@ -325,14 +325,15 @@
                         <div class="optional-section">
                             <!-- <h3>Cross-Cutting Library (Optional)</h3> Removing redundant h3 -->
                             <p class="description">If you have a shared library for cross-cutting concerns (e.g., base entities, common utilities), provide its Maven coordinates and the modules it provides. Ensure this library is accessible in your Maven repository.</p>
+                            <p class="description"><strong>Note:</strong> If you do not provide a cross-cutting library, the generator will create default implementations for: <code>AggregateRoot.java</code>, <code>BaseDomainEntity.java</code> (domain-core), <code>BaseEntity.java</code> (persistence), <code>GlobalExceptionHandler.java</code>, and <code>ResultObject.java</code> (application).</p>
                             <div class="form-group">
                                 <label for="ccGroupId">Library Group ID:</label>
                                 <input type="text" id="ccGroupId" th:field="*{crossCuttingLibrary.groupId}" placeholder="com.mycompany.commons"/>
                             </div>
                             <div class="form-group">
                                 <label for="ccName">Library Name (Artifact Prefix):</label>
-                                <input type="text" id="ccName" th:field="*{crossCuttingLibrary.name}" placeholder="hangar"/>
-                                <div class="description">e.g., 'hangar' if artifacts are hangar-domain, hangar-application, hangar-persistence.</div>
+                                <input type="text" id="ccName" th:field="*{crossCuttingLibrary.name}" placeholder="cross-cutting"/>
+                                <div class="description">e.g., 'cross-cutting' if artifacts are cross-cutting-domain, cross-cutting-application, cross-cutting-persistence.</div>
                             </div>
                             <div class="form-group">
                                 <label for="ccVersion">Library Version:</label>

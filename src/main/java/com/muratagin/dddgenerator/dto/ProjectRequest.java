@@ -9,6 +9,7 @@ public class ProjectRequest {
     private String description;
     private String javaVersion;
     private String springBootVersion;
+    private CrossCuttingLibraryRequest crossCuttingLibrary;
     private List<String> dependencies;
 
     // Constructors
@@ -17,13 +18,14 @@ public class ProjectRequest {
 
     public ProjectRequest(String groupId, String artifactId, String version,
                           String description, String javaVersion, String springBootVersion, 
-                          List<String> dependencies) {
+                          CrossCuttingLibraryRequest crossCuttingLibrary, List<String> dependencies) {
         this.groupId = groupId;
         this.artifactId = artifactId;
         this.version = version;
         this.description = description;
         this.javaVersion = javaVersion;
         this.springBootVersion = springBootVersion;
+        this.crossCuttingLibrary = crossCuttingLibrary;
         this.dependencies = dependencies;
     }
 
@@ -74,6 +76,14 @@ public class ProjectRequest {
 
     public void setSpringBootVersion(String springBootVersion) {
         this.springBootVersion = springBootVersion;
+    }
+
+    public CrossCuttingLibraryRequest getCrossCuttingLibrary() {
+        return crossCuttingLibrary;
+    }
+
+    public void setCrossCuttingLibrary(CrossCuttingLibraryRequest crossCuttingLibrary) {
+        this.crossCuttingLibrary = crossCuttingLibrary;
     }
 
     public List<String> getDependencies() {

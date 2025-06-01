@@ -1,6 +1,7 @@
 package com.muratagin.dddgenerator.service;
 
 import com.muratagin.dddgenerator.dto.ProjectRequest;
+import com.muratagin.dddgenerator.dto.CrossCuttingLibraryRequest;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -142,14 +143,49 @@ public class ProjectService {
         if (str == null || str.isEmpty()) {
             return str;
         }
-        return str.substring(0, 1).toUpperCase() + str.substring(1);
+        // Handle hyphens: split, capitalize each part, then join
+        String[] parts = str.split("-");
+        StringBuilder capitalizedString = new StringBuilder();
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+            capitalizedString.append(part.substring(0, 1).toUpperCase()).append(part.substring(1).toLowerCase());
+        }
+        return capitalizedString.toString();
     }
 
     private String generateRootPomXmlContent(ProjectRequest request) {
         String artifactId = request.getArtifactId();
-        // Use provided versions or default if null/empty
         String javaVersion = (request.getJavaVersion() != null && !request.getJavaVersion().isEmpty()) ? request.getJavaVersion() : "21";
         String springBootVersion = (request.getSpringBootVersion() != null && !request.getSpringBootVersion().isEmpty()) ? request.getSpringBootVersion() : "3.5.0";
+
+        StringBuilder propertiesBuilder = new StringBuilder();
+        propertiesBuilder.append(String.format("        <java.version>%s</java.version>\n", javaVersion));
+        propertiesBuilder.append("        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n");
+        propertiesBuilder.append("        <lombok.version>1.18.30</lombok.version>\n");
+
+        StringBuilder crossCuttingDepsXmlBuilder = new StringBuilder();
+        CrossCuttingLibraryRequest crossCuttingLib = request.getCrossCuttingLibrary();
+
+        if (crossCuttingLib != null && crossCuttingLib.getName() != null && !crossCuttingLib.getName().isEmpty() &&
+            crossCuttingLib.getVersion() != null && !crossCuttingLib.getVersion().isEmpty() &&
+            crossCuttingLib.getGroupId() != null && !crossCuttingLib.getGroupId().isEmpty() &&
+            crossCuttingLib.getDependencies() != null && !crossCuttingLib.getDependencies().isEmpty()) {
+            
+            String libName = crossCuttingLib.getName();
+            String libVersionProperty = libName.toLowerCase() + ".version";
+            propertiesBuilder.append(String.format("        <%s>%s</%s>\n", libVersionProperty, crossCuttingLib.getVersion(), libVersionProperty));
+
+            crossCuttingDepsXmlBuilder.append("\n            <!-- Cross-Cutting Library: ").append(libName).append(" -->\n");
+            for (String depSuffix : crossCuttingLib.getDependencies()) {
+                crossCuttingDepsXmlBuilder.append(String.format("""
+            <dependency>
+                <groupId>%s</groupId>
+                <artifactId>%s-%s</artifactId>
+                <version>${%s}</version>
+            </dependency>
+""", crossCuttingLib.getGroupId(), libName, depSuffix, libVersionProperty));
+            }
+        }
 
         return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
@@ -159,10 +195,9 @@ public class ProjectService {
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>%s</version> <!-- Use Spring Boot version from request -->
+        <version>%s</version>
         <relativePath/>
     </parent>
-    
     <groupId>%s</groupId>
     <artifactId>%s</artifactId>
     <version>%s</version>
@@ -179,10 +214,7 @@ public class ProjectService {
     </modules>
 
     <properties>
-        <java.version>%s</java.version> <!-- Use Java version from request -->
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <lombok.version>1.18.30</lombok.version>
-    </properties>
+%s    </properties>
 
     <dependencyManagement>
         <dependencies>
@@ -218,14 +250,10 @@ public class ProjectService {
                 <groupId>org.projectlombok</groupId>
                 <artifactId>lombok</artifactId>
                 <version>${lombok.version}</version>
-                <scope>provided</scope> <!-- Common scope for Lombok -->
-            </dependency>
-            <!-- Spring Boot starters like logging and devtools are managed by spring-boot-starter-parent -->
+                <scope>provided</scope>
+            </dependency>%s
         </dependencies>
     </dependencyManagement>
-
-    <!-- No direct dependencies needed at root level for child module consumption -->
-    <!-- <dependencies> </dependencies> -->
 
     <build>
         <pluginManagement>
@@ -233,7 +261,6 @@ public class ProjectService {
                 <plugin>
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
-                    <!-- Version managed by Spring Boot parent POM -->
                 </plugin>
             </plugins>
         </pluginManagement>
@@ -241,13 +268,12 @@ public class ProjectService {
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <!-- Version can be managed by Spring Boot parent or specified here -->
                 <configuration>
                     <annotationProcessorPaths>
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
-                            <version>${lombok.version}</version> <!-- Ensure compiler uses the same Lombok version -->
+                            <version>${lombok.version}</version>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
@@ -256,22 +282,24 @@ public class ProjectService {
     </build>
 </project>
                 """,
-                springBootVersion,    // For parent Spring Boot version
+                springBootVersion,
                 request.getGroupId(),
                 artifactId,
-                request.getVersion(),   // For root <version>
-                artifactId,             // For <name>
-                request.getDescription(), // For <description>
+                request.getVersion(),
+                artifactId,
+                request.getDescription(),
                 // Modules
                 artifactId, artifactId, artifactId, artifactId,
                 // Properties
-                javaVersion,         // For properties java.version
+                propertiesBuilder.toString(),
                 // Dependency Management - Project Modules
                 request.getGroupId(), artifactId, // container
                 request.getGroupId(), artifactId, // application
                 request.getGroupId(), artifactId, // domain-core
                 request.getGroupId(), artifactId, // application-service
-                request.getGroupId(), artifactId  // persistence
+                request.getGroupId(), artifactId, // persistence
+                // Cross-cutting library dependencies
+                crossCuttingDepsXmlBuilder.toString()
         );
     }
 
@@ -328,6 +356,7 @@ public class ProjectService {
                 <configuration>
                     <mainClass>${start-class}</mainClass>
                 </configuration>
+                
                 <executions>
                     <execution>
                         <goals>
@@ -416,11 +445,12 @@ spring:
     </parent>
 
     <artifactId>%s</artifactId>
+
     <packaging>pom</packaging>
 
     <modules>
+        <module>%s-application-service</module>    
         <module>%s-domain-core</module>
-        <module>%s-application-service</module>
     </modules>
 </project>
                 """,
@@ -448,13 +478,6 @@ spring:
 
     <artifactId>%s</artifactId>
 
-    <dependencies>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <!-- Scope and version managed by root POM -->
-        </dependency>
-    </dependencies>
 </project>
                 """,
                 request.getGroupId(),
@@ -480,19 +503,48 @@ spring:
     <artifactId>%s</artifactId>
 
     <dependencies>
+        <!-- Domain Core -->
         <dependency>
             <groupId>%s</groupId>
-            <artifactId>%s</artifactId> <!-- Depends on Domain Core -->
+            <artifactId>%s</artifactId>
         </dependency>
+
+        <!-- Spring Boot Validation -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Spring Transactions -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <!-- Scope and version managed by root POM -->
         </dependency>
-        <!-- For DTO validation using @Valid, @NotNull etc. -->
+
+        <!-- Jackson Annotations (often used with DTOs) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <!-- Version managed by Spring Boot parent -->
+        </dependency>
+
+        <!-- Test Dependencies -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation</artifactId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>
@@ -519,6 +571,7 @@ spring:
     </parent>
 
     <artifactId>%s</artifactId>
+
     <packaging>pom</packaging>
 
     <modules>
@@ -599,9 +652,14 @@ spring:
             <groupId>%s</groupId>
             <artifactId>%s</artifactId> <!-- Depends on Application Service -->
         </dependency>
+        
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId> <!-- For REST controllers -->
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId> <!-- For request validation -->
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>

@@ -1,32 +1,51 @@
 package com.muratagin.dddgenerator.dto;
 
-import java.util.List;
+import jakarta.validation.constraints.NotBlank;
+// Assuming CrossCuttingLibraryRequest doesn't need validation for this step, or is handled separately.
 
 public class ProjectRequest {
+
+    @NotBlank(message = "Group is required")
     private String groupId;
+
+    @NotBlank(message = "Artifact is required")
     private String artifactId;
-    private String version;
+
+    @NotBlank(message = "Project name is required")
+    private String name;
+
+    private String version; // Optional, defaults to "0.0.1-SNAPSHOT"
+
+    @NotBlank(message = "Description is required")
     private String description;
-    private String javaVersion;
-    private String springBootVersion;
-    private CrossCuttingLibraryRequest crossCuttingLibrary;
-    private List<String> dependencies;
+
+    @NotBlank(message = "Package name is required")
+    // Consider adding @Pattern(regexp = "^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+[0-9a-z_]$)" for stricter package name validation if needed
+    private String packageName;
+
+    private String javaVersion; // Optional, defaults in service
+    private String springBootVersion; // Optional, defaults in service
+    private String lombokVersion; // Optional, defaults in service
+    private CrossCuttingLibraryRequest crossCuttingLibrary; // Optional
 
     // Constructors
     public ProjectRequest() {
     }
 
-    public ProjectRequest(String groupId, String artifactId, String version,
-                          String description, String javaVersion, String springBootVersion, 
-                          CrossCuttingLibraryRequest crossCuttingLibrary, List<String> dependencies) {
+    public ProjectRequest(String groupId, String artifactId, String name, String version,
+                          String description, String packageName, String javaVersion, 
+                          String springBootVersion, String lombokVersion, 
+                          CrossCuttingLibraryRequest crossCuttingLibrary) {
         this.groupId = groupId;
         this.artifactId = artifactId;
+        this.name = name;
         this.version = version;
         this.description = description;
+        this.packageName = packageName;
         this.javaVersion = javaVersion;
         this.springBootVersion = springBootVersion;
+        this.lombokVersion = lombokVersion;
         this.crossCuttingLibrary = crossCuttingLibrary;
-        this.dependencies = dependencies;
     }
 
     // Getters and setters
@@ -46,6 +65,14 @@ public class ProjectRequest {
         this.artifactId = artifactId;
     }
 
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
     public String getVersion() {
         return version;
     }
@@ -60,6 +87,14 @@ public class ProjectRequest {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public String getPackageName() {
+        return packageName;
+    }
+
+    public void setPackageName(String packageName) {
+        this.packageName = packageName;
     }
 
     public String getJavaVersion() {
@@ -78,19 +113,19 @@ public class ProjectRequest {
         this.springBootVersion = springBootVersion;
     }
 
+    public String getLombokVersion() {
+        return lombokVersion;
+    }
+
+    public void setLombokVersion(String lombokVersion) {
+        this.lombokVersion = lombokVersion;
+    }
+
     public CrossCuttingLibraryRequest getCrossCuttingLibrary() {
         return crossCuttingLibrary;
     }
 
     public void setCrossCuttingLibrary(CrossCuttingLibraryRequest crossCuttingLibrary) {
         this.crossCuttingLibrary = crossCuttingLibrary;
-    }
-
-    public List<String> getDependencies() {
-        return dependencies;
-    }
-
-    public void setDependencies(List<String> dependencies) {
-        this.dependencies = dependencies;
     }
 }

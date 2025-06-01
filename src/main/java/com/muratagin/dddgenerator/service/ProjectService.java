@@ -11,31 +11,33 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import java.util.List;
 
 @Service
 public class ProjectService {
+
+    private static final String DEFAULT_VERSION = "0.0.1-SNAPSHOT";
 
     public byte[] generateProjectZip(ProjectRequest request) throws IOException {
         Path tempDir = Files.createTempDirectory("ddd-project-" + request.getArtifactId() + "-");
         String rootArtifactId = request.getArtifactId();
         String groupId = request.getGroupId();
-        String version = request.getVersion();
+        String version = (request.getVersion() != null && !request.getVersion().isEmpty()) ? request.getVersion() : DEFAULT_VERSION;
         String description = request.getDescription();
-        String basePackagePath = groupId.replace('.', File.separatorChar);
+        String basePackagePath = request.getPackageName().replace('.', File.separatorChar);
 
         // 1. Create Root Project Structure
         Path pomFile = Paths.get(tempDir.toString(), "pom.xml");
-        Files.writeString(pomFile, generateRootPomXmlContent(request));
+        Files.writeString(pomFile, generateRootPomXmlContent(request, version));
 
         // 2. Create Container Module
         String containerArtifactId = rootArtifactId + "-container";
         Path containerModuleDir = Paths.get(tempDir.toString(), containerArtifactId);
         Files.createDirectories(containerModuleDir);
         Path containerPom = Paths.get(containerModuleDir.toString(), "pom.xml");
-        Files.writeString(containerPom, generateContainerPomXmlContent(request, containerArtifactId, rootArtifactId));
+        Files.writeString(containerPom, generateContainerPomXmlContent(request, containerArtifactId, rootArtifactId, version));
         Path containerMainJavaDir = Paths.get(containerModuleDir.toString(), "src", "main", "java", basePackagePath, "container");
         Files.createDirectories(containerMainJavaDir);
         Path containerAppFile = Paths.get(containerMainJavaDir.toString(), capitalize(rootArtifactId) + "ContainerApplication.java");
@@ -50,14 +52,14 @@ public class ProjectService {
         Path domainModuleDir = Paths.get(tempDir.toString(), domainParentArtifactId);
         Files.createDirectories(domainModuleDir);
         Path domainParentPom = Paths.get(domainModuleDir.toString(), "pom.xml");
-        Files.writeString(domainParentPom, generateDomainParentPomXmlContent(request, domainParentArtifactId, rootArtifactId));
+        Files.writeString(domainParentPom, generateDomainParentPomXmlContent(request, domainParentArtifactId, rootArtifactId, version));
 
         // 3.a. Create Domain Core Module
         String domainCoreArtifactId = rootArtifactId + "-domain-core";
         Path domainCoreModuleDir = Paths.get(domainModuleDir.toString(), domainCoreArtifactId);
         Files.createDirectories(domainCoreModuleDir);
         Path domainCorePom = Paths.get(domainCoreModuleDir.toString(), "pom.xml");
-        Files.writeString(domainCorePom, generateDomainCorePomXmlContent(request, domainCoreArtifactId, domainParentArtifactId));
+        Files.writeString(domainCorePom, generateDomainCorePomXmlContent(request, domainCoreArtifactId, domainParentArtifactId, version));
         Path domainCoreMainJava = Paths.get(domainCoreModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "core");
         Files.createDirectories(domainCoreMainJava);
         Files.createFile(Paths.get(domainCoreMainJava.toString(), ".gitkeep"));
@@ -68,7 +70,7 @@ public class ProjectService {
         Path appServiceModuleDir = Paths.get(domainModuleDir.toString(), appServiceArtifactId);
         Files.createDirectories(appServiceModuleDir);
         Path appServicePom = Paths.get(appServiceModuleDir.toString(), "pom.xml");
-        Files.writeString(appServicePom, generateApplicationServicePomXmlContent(request, appServiceArtifactId, domainParentArtifactId, domainCoreArtifactId));
+        Files.writeString(appServicePom, generateApplicationServicePomXmlContent(request, appServiceArtifactId, domainParentArtifactId, domainCoreArtifactId, version));
         Path appServiceMainJava = Paths.get(appServiceModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "applicationservice");
         Files.createDirectories(appServiceMainJava);
         Files.createFile(Paths.get(appServiceMainJava.toString(), ".gitkeep"));
@@ -78,14 +80,14 @@ public class ProjectService {
         Path infraModuleDir = Paths.get(tempDir.toString(), infraParentArtifactId);
         Files.createDirectories(infraModuleDir);
         Path infraParentPom = Paths.get(infraModuleDir.toString(), "pom.xml");
-        Files.writeString(infraParentPom, generateInfrastructureParentPomXmlContent(request, infraParentArtifactId, rootArtifactId));
+        Files.writeString(infraParentPom, generateInfrastructureParentPomXmlContent(request, infraParentArtifactId, rootArtifactId, version));
 
         // 4.a. Create Persistence Module
         String persistenceArtifactId = rootArtifactId + "-persistence";
         Path persistenceModuleDir = Paths.get(infraModuleDir.toString(), persistenceArtifactId);
         Files.createDirectories(persistenceModuleDir);
         Path persistencePom = Paths.get(persistenceModuleDir.toString(), "pom.xml");
-        Files.writeString(persistencePom, generatePersistencePomXmlContent(request, persistenceArtifactId, infraParentArtifactId, appServiceArtifactId));
+        Files.writeString(persistencePom, generatePersistencePomXmlContent(request, persistenceArtifactId, infraParentArtifactId, appServiceArtifactId, version));
         Path persistenceMainJava = Paths.get(persistenceModuleDir.toString(), "src", "main", "java", basePackagePath, "infrastructure", "persistence");
         Files.createDirectories(persistenceMainJava);
         Files.createFile(Paths.get(persistenceMainJava.toString(), ".gitkeep"));
@@ -95,7 +97,7 @@ public class ProjectService {
         Path appLayerModuleDir = Paths.get(tempDir.toString(), appLayerArtifactId);
         Files.createDirectories(appLayerModuleDir);
         Path appLayerPom = Paths.get(appLayerModuleDir.toString(), "pom.xml");
-        Files.writeString(appLayerPom, generateApplicationLayerPomXmlContent(request, appLayerArtifactId, rootArtifactId, appServiceArtifactId));
+        Files.writeString(appLayerPom, generateApplicationLayerPomXmlContent(request, appLayerArtifactId, rootArtifactId, appServiceArtifactId, version));
         Path appLayerMainJava = Paths.get(appLayerModuleDir.toString(), "src", "main", "java", basePackagePath, "application");
         Files.createDirectories(appLayerMainJava);
         Files.createFile(Paths.get(appLayerMainJava.toString(), ".gitkeep"));
@@ -153,15 +155,34 @@ public class ProjectService {
         return capitalizedString.toString();
     }
 
-    private String generateRootPomXmlContent(ProjectRequest request) {
+    private String generateRootPomXmlContent(ProjectRequest request, String effectiveVersion) {
         String artifactId = request.getArtifactId();
         String javaVersion = (request.getJavaVersion() != null && !request.getJavaVersion().isEmpty()) ? request.getJavaVersion() : "21";
         String springBootVersion = (request.getSpringBootVersion() != null && !request.getSpringBootVersion().isEmpty()) ? request.getSpringBootVersion() : "3.5.0";
+        String lombokVersion = request.getLombokVersion();
 
         StringBuilder propertiesBuilder = new StringBuilder();
         propertiesBuilder.append(String.format("        <java.version>%s</java.version>\n", javaVersion));
         propertiesBuilder.append("        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n");
-        propertiesBuilder.append("        <lombok.version>1.18.30</lombok.version>\n");
+
+        String lombokDependencyManagementEntry = "";
+        String lombokCompilerPathVersionTag = "";
+
+        if (lombokVersion != null && !lombokVersion.isEmpty()) {
+            propertiesBuilder.append(String.format("        <lombok.version>%s</lombok.version>\n", lombokVersion));
+            String lombokVersionPropertyRef = "${lombok.version}";
+            lombokDependencyManagementEntry =
+                    "            <dependency>\n" +
+                    "                <groupId>org.projectlombok</groupId>\n" +
+                    "                <artifactId>lombok</artifactId>\n" +
+                    String.format("                <version>%s</version>\n", lombokVersionPropertyRef) +
+                    "                <scope>provided</scope>\n" +
+                    "            </dependency>"; // No trailing newline here, it will be handled by the main template
+            lombokCompilerPathVersionTag = String.format("                            <version>%s</version>\n", lombokVersionPropertyRef);
+        } else {
+            // If lombokVersion is not provided, Lombok is not added to root dependencyManagement.
+            // Children inherit from Spring Boot parent. Compiler plugin path also inherits.
+        }
 
         StringBuilder crossCuttingDepsXmlBuilder = new StringBuilder();
         CrossCuttingLibraryRequest crossCuttingLib = request.getCrossCuttingLibrary();
@@ -175,15 +196,24 @@ public class ProjectService {
             String libVersionProperty = libName.toLowerCase() + ".version";
             propertiesBuilder.append(String.format("        <%s>%s</%s>\n", libVersionProperty, crossCuttingLib.getVersion(), libVersionProperty));
 
-            crossCuttingDepsXmlBuilder.append("\n            <!-- Cross-Cutting Library: ").append(libName).append(" -->\n");
-            for (String depSuffix : crossCuttingLib.getDependencies()) {
-                crossCuttingDepsXmlBuilder.append(String.format("""
-            <dependency>
-                <groupId>%s</groupId>
-                <artifactId>%s-%s</artifactId>
-                <version>${%s}</version>
-            </dependency>
-""", crossCuttingLib.getGroupId(), libName, depSuffix, libVersionProperty));
+            crossCuttingDepsXmlBuilder.append("\n            <!-- Cross-Cutting Library: ").append(libName).append(" -->");
+
+            List<String> actualDeps = crossCuttingLib.getDependencies();
+            
+            crossCuttingDepsXmlBuilder.append("\n");
+
+            for (int i = 0; i < actualDeps.size(); i++) {
+                String depSuffix = actualDeps.get(i);
+                String depBlock =
+                        "            <dependency>\n" +
+                        String.format("                <groupId>%s</groupId>\n", crossCuttingLib.getGroupId()) +
+                        String.format("                <artifactId>%s-%s</artifactId>\n", libName, depSuffix) +
+                        String.format("                <version>${%s}</version>\n", libVersionProperty) +
+                        "            </dependency>";
+                crossCuttingDepsXmlBuilder.append(depBlock);
+                if (i < actualDeps.size() - 1) {
+                    crossCuttingDepsXmlBuilder.append("\n");
+                }
             }
         }
 
@@ -246,12 +276,8 @@ public class ProjectService {
             </dependency>
 
             <!-- Common Third-Party Dependencies -->
-            <dependency>
-                <groupId>org.projectlombok</groupId>
-                <artifactId>lombok</artifactId>
-                <version>${lombok.version}</version>
-                <scope>provided</scope>
-            </dependency>%s
+%s
+%s
         </dependencies>
     </dependencyManagement>
 
@@ -273,8 +299,7 @@ public class ProjectService {
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
-                            <version>${lombok.version}</version>
-                        </path>
+%s                        </path>
                     </annotationProcessorPaths>
                 </configuration>
             </plugin>
@@ -285,8 +310,8 @@ public class ProjectService {
                 springBootVersion,
                 request.getGroupId(),
                 artifactId,
-                request.getVersion(),
-                artifactId,
+                effectiveVersion,
+                request.getName(),
                 request.getDescription(),
                 // Modules
                 artifactId, artifactId, artifactId, artifactId,
@@ -298,12 +323,15 @@ public class ProjectService {
                 request.getGroupId(), artifactId, // domain-core
                 request.getGroupId(), artifactId, // application-service
                 request.getGroupId(), artifactId, // persistence
-                // Cross-cutting library dependencies
-                crossCuttingDepsXmlBuilder.toString()
+                // Common Third-Party Dependencies
+                lombokDependencyManagementEntry,
+                crossCuttingDepsXmlBuilder.toString(),
+                // Lombok version for compiler plugin
+                lombokCompilerPathVersionTag
         );
     }
 
-    private String generateContainerPomXmlContent(ProjectRequest request, String containerArtifactId, String rootArtifactId) {
+    private String generateContainerPomXmlContent(ProjectRequest request, String containerArtifactId, String rootArtifactId, String effectiveVersion) {
         return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -371,9 +399,9 @@ public class ProjectService {
                 """,
                 request.getGroupId(), // For parent groupId
                 rootArtifactId,       // For parent artifactId
-                request.getVersion(), // For parent version
+                effectiveVersion, // For parent version
                 containerArtifactId,  // For self artifactId
-                request.getGroupId(), // For start-class groupId part
+                request.getPackageName(), // For start-class package name part
                 capitalize(rootArtifactId), // For start-class ApplicationName part
                 request.getGroupId(), rootArtifactId, // domain-core module
                 request.getGroupId(), rootArtifactId, // application-service module
@@ -383,6 +411,7 @@ public class ProjectService {
     }
     private String generateContainerApplicationJavaContent(ProjectRequest request, String rootArtifactId, String modulePackageName) {
         String mainClassName = capitalize(rootArtifactId) + capitalize(modulePackageName) + "Application";
+        // Use request.getPackageName() for the main package and ComponentScan
         return String.format("""
 package %s.%s;
 
@@ -391,7 +420,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.ComponentScan;
 
 @SpringBootApplication
-@ComponentScan(basePackages = "%s") // Scan all project modules
+@ComponentScan(basePackages = "%s") // Scan all project modules based on request.getPackageName()
 public class %s {
 
     public static void main(String[] args) {
@@ -400,9 +429,9 @@ public class %s {
 
 }
                 """,
-                request.getGroupId(),
-                modulePackageName.replace("-", ""), // com.example.container
-                request.getGroupId(), // scan base package: com.example
+                request.getPackageName(), // e.g., com.example.demo
+                modulePackageName.replace("-", ""), // e.g., container
+                request.getPackageName(), // scan base package: e.g., com.example.demo
                 mainClassName,
                 mainClassName
         );
@@ -431,7 +460,7 @@ spring:
 """, rootArtifactId, rootArtifactId);
     }
 
-    private String generateDomainParentPomXmlContent(ProjectRequest request, String domainParentArtifactId, String rootArtifactId) {
+    private String generateDomainParentPomXmlContent(ProjectRequest request, String domainParentArtifactId, String rootArtifactId, String effectiveVersion) {
         return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -456,14 +485,14 @@ spring:
                 """,
                 request.getGroupId(),
                 rootArtifactId,
-                request.getVersion(),
+                effectiveVersion,
                 domainParentArtifactId,
                 rootArtifactId, // domain-core module name uses root artifactId as prefix
                 rootArtifactId  // application-service module name uses root artifactId as prefix
         );
     }
 
-    private String generateDomainCorePomXmlContent(ProjectRequest request, String domainCoreArtifactId, String domainParentArtifactId) {
+    private String generateDomainCorePomXmlContent(ProjectRequest request, String domainCoreArtifactId, String domainParentArtifactId, String effectiveVersion) {
          return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -472,7 +501,7 @@ spring:
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>%s</groupId>
-        <artifactId>%s</artifactId> <!-- Parent is the -domain module -->
+        <artifactId>%s</artifactId>
         <version>%s</version>
     </parent>
 
@@ -482,12 +511,12 @@ spring:
                 """,
                 request.getGroupId(),
                 domainParentArtifactId,
-                request.getVersion(),
+                effectiveVersion,
                 domainCoreArtifactId
         );
     }
     
-    private String generateApplicationServicePomXmlContent(ProjectRequest request, String appServiceArtifactId, String domainParentArtifactId, String domainCoreArtifactId) {
+    private String generateApplicationServicePomXmlContent(ProjectRequest request, String appServiceArtifactId, String domainParentArtifactId, String domainCoreArtifactId, String effectiveVersion) {
         return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -496,7 +525,7 @@ spring:
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>%s</groupId>
-        <artifactId>%s</artifactId> <!-- Parent is the -domain module -->
+        <artifactId>%s</artifactId>
         <version>%s</version>
     </parent>
 
@@ -551,13 +580,13 @@ spring:
                 """,
                 request.getGroupId(),
                 domainParentArtifactId,
-                request.getVersion(),
+                effectiveVersion,
                 appServiceArtifactId,
                 request.getGroupId(), domainCoreArtifactId
         );
     }
 
-    private String generateInfrastructureParentPomXmlContent(ProjectRequest request, String infraParentArtifactId, String rootArtifactId) {
+    private String generateInfrastructureParentPomXmlContent(ProjectRequest request, String infraParentArtifactId, String rootArtifactId, String effectiveVersion) {
         return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -581,13 +610,13 @@ spring:
                 """,
                 request.getGroupId(),
                 rootArtifactId,
-                request.getVersion(),
+                effectiveVersion,
                 infraParentArtifactId,
                 rootArtifactId // persistence module name uses root artifactId as prefix
         );
     }
 
-    private String generatePersistencePomXmlContent(ProjectRequest request, String persistenceArtifactId, String infraParentArtifactId, String appServiceArtifactId) {
+    private String generatePersistencePomXmlContent(ProjectRequest request, String persistenceArtifactId, String infraParentArtifactId, String appServiceArtifactId, String effectiveVersion) {
         return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -596,7 +625,7 @@ spring:
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>%s</groupId>
-        <artifactId>%s</artifactId> <!-- Parent is the -infrastructure module -->
+        <artifactId>%s</artifactId>
         <version>%s</version>
     </parent>
 
@@ -605,7 +634,7 @@ spring:
     <dependencies>
         <dependency>
             <groupId>%s</groupId>
-            <artifactId>%s</artifactId> <!-- Depends on Application Service for Ports -->
+            <artifactId>%s</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -626,13 +655,13 @@ spring:
                 """,
                 request.getGroupId(),
                 infraParentArtifactId,
-                request.getVersion(),
+                effectiveVersion,
                 persistenceArtifactId,
                 request.getGroupId(), appServiceArtifactId
         );
     }
 
-    private String generateApplicationLayerPomXmlContent(ProjectRequest request, String appLayerArtifactId, String rootArtifactId, String appServiceArtifactId) {
+    private String generateApplicationLayerPomXmlContent(ProjectRequest request, String appLayerArtifactId, String rootArtifactId, String appServiceArtifactId, String effectiveVersion) {
         return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -641,7 +670,7 @@ spring:
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>%s</groupId>
-        <artifactId>%s</artifactId> <!-- Parent is the root project -->
+        <artifactId>%s</artifactId>
         <version>%s</version>
     </parent>
 
@@ -650,16 +679,16 @@ spring:
     <dependencies>
         <dependency>
             <groupId>%s</groupId>
-            <artifactId>%s</artifactId> <!-- Depends on Application Service -->
+            <artifactId>%s</artifactId>
         </dependency>
         
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId> <!-- For REST controllers -->
+            <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation</artifactId> <!-- For request validation -->
+            <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -671,7 +700,7 @@ spring:
                 """,
                 request.getGroupId(),
                 rootArtifactId,
-                request.getVersion(),
+                effectiveVersion,
                 appLayerArtifactId,
                 request.getGroupId(), appServiceArtifactId
         );

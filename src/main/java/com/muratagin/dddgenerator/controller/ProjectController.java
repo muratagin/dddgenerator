@@ -2,13 +2,12 @@ package com.muratagin.dddgenerator.controller;
 
 import com.muratagin.dddgenerator.dto.ProjectRequest;
 import com.muratagin.dddgenerator.service.ProjectService;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
 
@@ -23,18 +22,13 @@ public class ProjectController {
     }
 
     @PostMapping
-    public ResponseEntity<byte[]> generateProject(@RequestBody ProjectRequest request) {
-        try {
-            byte[] zipContent = projectService.generateProjectZip(request);
+    public ResponseEntity<byte[]> generateProject(@Valid @RequestBody ProjectRequest request) throws IOException {
+        byte[] zipFile = projectService.generateProjectZip(request);
 
-            // Prepare the response
-            return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment;filename=" + request.getArtifactId() + ".zip")
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .body(zipContent);
-        } catch (IOException e) {
-            e.printStackTrace();
-            return ResponseEntity.internalServerError().build();
-        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+        headers.setContentDispositionFormData("attachment", request.getArtifactId() + ".zip");
+
+        return new ResponseEntity<>(zipFile, headers, HttpStatus.OK);
     }
 }

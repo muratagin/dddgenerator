@@ -11,6 +11,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import java.util.List;
@@ -21,12 +24,43 @@ public class ProjectService {
     private static final String DEFAULT_VERSION = "0.0.1-SNAPSHOT";
 
     public byte[] generateProjectZip(ProjectRequest request) throws IOException {
+        // Validate CrossCuttingLibrary early
+        CrossCuttingLibraryRequest crossCuttingLib = request.getCrossCuttingLibrary();
+        boolean useCrossCuttingLibrary = false;
+        if (crossCuttingLib != null && 
+            crossCuttingLib.getName() != null && !crossCuttingLib.getName().isEmpty() &&
+            crossCuttingLib.getGroupId() != null && !crossCuttingLib.getGroupId().isEmpty() &&
+            crossCuttingLib.getVersion() != null && !crossCuttingLib.getVersion().isEmpty() &&
+            crossCuttingLib.getDependencies() != null && !crossCuttingLib.getDependencies().isEmpty()) {
+            
+            useCrossCuttingLibrary = true; // Assume valid unless checks fail
+            List<String> requiredDeps = Arrays.asList("domain", "application", "persistence");
+            Set<String> providedDeps = new HashSet<>(crossCuttingLib.getDependencies());
+            if (!providedDeps.containsAll(requiredDeps)) {
+                throw new IllegalArgumentException("Cross-cutting library dependencies must include 'domain', 'application', and 'persistence'.");
+            }
+        } else if (crossCuttingLib != null && 
+                   ( (crossCuttingLib.getName() != null && !crossCuttingLib.getName().isEmpty()) || 
+                     (crossCuttingLib.getGroupId() != null && !crossCuttingLib.getGroupId().isEmpty()) || 
+                     (crossCuttingLib.getVersion() != null && !crossCuttingLib.getVersion().isEmpty()) || 
+                     (crossCuttingLib.getDependencies() != null && !crossCuttingLib.getDependencies().isEmpty()) )) {
+            // If any part of crossCuttingLibrary is specified, but not all, it's an error
+            throw new IllegalArgumentException("Cross-cutting library details (name, groupId, version, dependencies) are incomplete or invalid.");
+        }
+        // If crossCuttingLib is null or all its fields are null/empty, useCrossCuttingLibrary remains false, and defaults will be used.
+
         Path tempDir = Files.createTempDirectory("ddd-project-" + request.getArtifactId() + "-");
         String rootArtifactId = request.getArtifactId();
         String groupId = request.getGroupId();
         String version = (request.getVersion() != null && !request.getVersion().isEmpty()) ? request.getVersion() : DEFAULT_VERSION;
         String description = request.getDescription();
-        String basePackagePath = request.getPackageName().replace('.', File.separatorChar);
+        
+        // Sanitize package name: replace hyphens with underscores for Java compatibility
+        String originalPackageName = request.getPackageName();
+        String sanitizedPackageName = originalPackageName.replace('-', '_');
+
+        String basePackagePath = sanitizedPackageName.replace('.', File.separatorChar);
+        String basePackageNameForClassGen = sanitizedPackageName; // Use sanitized version for class gen
 
         // 1. Create Root Project Structure
         Path pomFile = Paths.get(tempDir.toString(), "pom.xml");
@@ -62,7 +96,15 @@ public class ProjectService {
         Files.writeString(domainCorePom, generateDomainCorePomXmlContent(request, domainCoreArtifactId, domainParentArtifactId, version));
         Path domainCoreMainJava = Paths.get(domainCoreModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "core");
         Files.createDirectories(domainCoreMainJava);
-        Files.createFile(Paths.get(domainCoreMainJava.toString(), ".gitkeep"));
+        
+        if (!useCrossCuttingLibrary) {
+            Path domainCoreEntityDir = Paths.get(domainCoreMainJava.toString(), "entity");
+            Files.createDirectories(domainCoreEntityDir);
+            Files.writeString(Paths.get(domainCoreEntityDir.toString(), "AggregateRoot.java"), generateDefaultAggregateRootContent(basePackageNameForClassGen));
+            Files.writeString(Paths.get(domainCoreEntityDir.toString(), "BaseDomainEntity.java"), generateDefaultBaseDomainEntityContent(basePackageNameForClassGen));
+        } else {
+            Files.createFile(Paths.get(domainCoreMainJava.toString(), ".gitkeep"));
+        }
 
 
         // 3.b. Create Application Service Module
@@ -90,7 +132,14 @@ public class ProjectService {
         Files.writeString(persistencePom, generatePersistencePomXmlContent(request, persistenceArtifactId, infraParentArtifactId, appServiceArtifactId, version));
         Path persistenceMainJava = Paths.get(persistenceModuleDir.toString(), "src", "main", "java", basePackagePath, "infrastructure", "persistence");
         Files.createDirectories(persistenceMainJava);
-        Files.createFile(Paths.get(persistenceMainJava.toString(), ".gitkeep"));
+
+        if (!useCrossCuttingLibrary) {
+            Path persistenceEntityDir = Paths.get(persistenceMainJava.toString(), "entity");
+            Files.createDirectories(persistenceEntityDir);
+            Files.writeString(Paths.get(persistenceEntityDir.toString(), "BaseEntity.java"), generateDefaultBaseEntityContent(basePackageNameForClassGen));
+        } else {
+            Files.createFile(Paths.get(persistenceMainJava.toString(), ".gitkeep"));
+        }
 
         // 5. Create Application (Presentation) Module
         String appLayerArtifactId = rootArtifactId + "-application";
@@ -100,7 +149,18 @@ public class ProjectService {
         Files.writeString(appLayerPom, generateApplicationLayerPomXmlContent(request, appLayerArtifactId, rootArtifactId, appServiceArtifactId, version));
         Path appLayerMainJava = Paths.get(appLayerModuleDir.toString(), "src", "main", "java", basePackagePath, "application");
         Files.createDirectories(appLayerMainJava);
-        Files.createFile(Paths.get(appLayerMainJava.toString(), ".gitkeep"));
+
+        if (!useCrossCuttingLibrary) {
+            Path appLayerExceptionDir = Paths.get(appLayerMainJava.toString(), "exception");
+            Files.createDirectories(appLayerExceptionDir);
+            Files.writeString(Paths.get(appLayerExceptionDir.toString(), "GlobalExceptionHandler.java"), generateDefaultGlobalExceptionHandlerContent(basePackageNameForClassGen));
+            
+            Path appLayerPayloadDir = Paths.get(appLayerMainJava.toString(), "payload");
+            Files.createDirectories(appLayerPayloadDir);
+            Files.writeString(Paths.get(appLayerPayloadDir.toString(), "ResultObject.java"), generateDefaultResultObjectContent(basePackageNameForClassGen));
+        } else {
+            Files.createFile(Paths.get(appLayerMainJava.toString(), ".gitkeep"));
+        }
 
 
         // 6. Zip up the temp directory
@@ -332,6 +392,7 @@ public class ProjectService {
     }
 
     private String generateContainerPomXmlContent(ProjectRequest request, String containerArtifactId, String rootArtifactId, String effectiveVersion) {
+        String sanitizedPackageName = request.getPackageName().replace('-', '_');
         return String.format("""
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -401,7 +462,7 @@ public class ProjectService {
                 rootArtifactId,       // For parent artifactId
                 effectiveVersion, // For parent version
                 containerArtifactId,  // For self artifactId
-                request.getPackageName(), // For start-class package name part
+                sanitizedPackageName, // For start-class package name part
                 capitalize(rootArtifactId), // For start-class ApplicationName part
                 request.getGroupId(), rootArtifactId, // domain-core module
                 request.getGroupId(), rootArtifactId, // application-service module
@@ -411,6 +472,7 @@ public class ProjectService {
     }
     private String generateContainerApplicationJavaContent(ProjectRequest request, String rootArtifactId, String modulePackageName) {
         String mainClassName = capitalize(rootArtifactId) + capitalize(modulePackageName) + "Application";
+        String sanitizedPackageName = request.getPackageName().replace('-', '_');
         // Use request.getPackageName() for the main package and ComponentScan
         return String.format("""
 package %s.%s;
@@ -429,9 +491,9 @@ public class %s {
 
 }
                 """,
-                request.getPackageName(), // e.g., com.example.demo
+                sanitizedPackageName, // e.g., com.example.demo
                 modulePackageName.replace("-", ""), // e.g., container
-                request.getPackageName(), // scan base package: e.g., com.example.demo
+                sanitizedPackageName, // scan base package: e.g., com.example.demo
                 mainClassName,
                 mainClassName
         );
@@ -720,5 +782,183 @@ spring:
                         System.err.println("Failed to delete: " + p + " - " + e.getMessage());
                     }
                 });
+    }
+
+    // --- Methods for generating default cross-cutting concern classes ---
+
+    private String generateDefaultGlobalExceptionHandlerContent(String basePackageName) {
+        return String.format("""
+package %s.application.exception;
+
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.ValidationException;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.web.bind.annotation.ControllerAdvice;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
+
+import java.net.URI;
+
+@Slf4j
+@ControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ResponseBody
+    @ExceptionHandler(value = {ValidationException.class, ConstraintViolationException.class})
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ProblemDetail handle(ValidationException exception) {
+        log.error(exception.getMessage(), exception);
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, exception.getMessage());
+        problemDetail.setType(URI.create("https://www.rfc-editor.org/rfc/rfc9110#status.400"));
+        return problemDetail;
+    }
+
+    @ResponseBody
+    @ExceptionHandler(value = {NoResourceFoundException.class})
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public ProblemDetail handleException(NoResourceFoundException exception) {
+        log.error(exception.getMessage(), exception);
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, exception.getMessage());
+        problemDetail.setType(URI.create("https://www.rfc-editor.org/rfc/rfc9110#status.404"));
+        return problemDetail;
+    }
+}
+""", basePackageName);
+    }
+
+    private String generateDefaultResultObjectContent(String basePackageName) {
+        return String.format("""
+package %s.application.payload;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+
+import java.util.List;
+
+@Data
+@Builder
+@AllArgsConstructor
+public class ResultObject<T> {
+
+    private Boolean isSuccess;
+    private T data;
+    private List<String> messages;
+
+    public static <T> ResultObject<T> empty() {
+        return success(null);
+    }
+
+    public static <T> ResultObject<T> success(T data) {
+        return ResultObject.<T>builder()
+                .isSuccess(true)
+                .data(data)
+                .build();
+    }
+
+    public static <T> ResultObject<T> success(T data, String message) {
+        return ResultObject.<T>builder()
+                .isSuccess(true)
+                .data(data)
+                .messages(List.of(message))
+                .build();
+    }
+
+    public static <T> ResultObject<T> error(List<String> failureMessages) {
+        return ResultObject.<T>builder()
+                .isSuccess(false)
+                .messages(failureMessages)
+                .build();
+    }
+
+    public static <T> ResultObject<T> error(String failureMessage) {
+        return ResultObject.<T>builder()
+                .isSuccess(false)
+                .messages(List.of(failureMessage))
+                .build();
+    }
+}
+""", basePackageName);
+    }
+
+    private String generateDefaultAggregateRootContent(String basePackageName) {
+        return String.format("""
+package %s.domain.core.entity;
+
+public abstract class AggregateRoot<ID> extends BaseDomainEntity<ID> {
+}
+""", basePackageName);
+    }
+
+    private String generateDefaultBaseDomainEntityContent(String basePackageName) {
+        return String.format("""
+package %s.domain.core.entity;
+
+import java.util.Objects;
+
+public abstract class BaseDomainEntity<ID> {
+
+    private ID id;
+
+    public ID getId() {
+        return id;
+    }
+
+    public void setId(ID id) {
+        this.id = id;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        BaseDomainEntity<?> that = (BaseDomainEntity<?>) o;
+        return Objects.equals(id, that.id);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id);
+    }
+}
+""", basePackageName);
+    }
+
+    private String generateDefaultBaseEntityContent(String basePackageName) {
+        // Note: The original BaseEntity used jakarta.persistence.
+        // Ensure these dependencies are available in the persistence module if this is generated.
+        return String.format("""
+package %s.infrastructure.persistence.entity;
+
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.MappedSuperclass;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@MappedSuperclass
+public class BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    protected UUID id;
+
+    protected Boolean isDeleted;
+
+    public BaseEntity(UUID id, Boolean isDeleted) {
+        this.id = id;
+        this.isDeleted = isDeleted;
+    }
+}
+""", basePackageName);
     }
 }

@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>DDD Generator</title>
+    <style>
+        :root {
+            --bg-color: #2d333b; /* Dark background */
+            --text-color: #cdd9e5; /* Light text */
+            --input-bg-color: #22272e;
+            --input-border-color: #444c56;
+            --input-focus-border-color: #58a6ff;
+            --container-bg-color: #22272e; /* Darker container for sections */
+            --header-color: #58a6ff; /* Accent blue */
+            --button-bg-color: #3fb950; /* Green button */
+            --button-hover-bg-color: #48cb5c;
+            --description-text-color: #8b949e;
+            --error-bg-color: #482224;
+            --error-text-color: #f85149;
+            --error-border-color: #6e2c2f;
+            --label-color: #cdd9e5;
+            --section-border-color: #444c56;
+            --sidebar-bg-color: #22272e; /* Explicit sidebar bg */
+            --main-content-bg-color: #2d333b; /* Match body or slightly different */
+        }
+
+        html.light-mode {
+            --bg-color: #f4f7f6;
+            --text-color: #333;
+            --input-bg-color: #fff;
+            --input-border-color: #ccc;
+            --input-focus-border-color: #007bff;
+            --container-bg-color: #ffffff;
+            --header-color: #007bff;
+            --button-bg-color: #28a745;
+            --button-hover-bg-color: #218838;
+            --description-text-color: #777;
+            --error-bg-color: #f2dede;
+            --error-text-color: #d9534f;
+            --error-border-color: #ebccd1;
+            --label-color: #555;
+            --section-border-color: #ddd;
+            --sidebar-bg-color: #ffffff;
+            --main-content-bg-color: #f4f7f6;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: calc(100vh - 40px);
+        }
+
+        form {
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .page-wrapper {
+            display: flex;
+            width: 100%;
+            background-color: var(--container-bg-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            min-height: calc(100vh - 40px); /* Ensure it can fill height */
+        }
+
+        .sidebar {
+            width: 300px; /* Slightly wider */
+            padding: 25px;
+            background-color: var(--sidebar-bg-color);
+            border-right: 1px solid var(--section-border-color);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start; /* Align items to start for normal flow */
+            overflow-y: auto; /* Allow sidebar to scroll if content exceeds height */
+        }
+
+        .sidebar img.logo {
+            width: 80px; /* Adjusted size */
+            height: auto;
+            margin-bottom: 10px;
+            align-self: center;
+        }
+
+        .sidebar h1 {
+            font-size: 24px; /* Adjusted size */
+            color: var(--header-color);
+            margin-bottom: 20px;
+            text-align: center;
+            width: 100%;
+        }
+        
+        .sidebar h2 {
+            font-size: 18px; /* Options title size */
+            color: var(--header-color);
+            margin-top: 20px; /* Space above Project Options */
+            margin-bottom: 15px;
+            width: 100%;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--section-border-color);
+        }
+
+        #theme-toggle {
+            background: var(--input-bg-color);
+            color: var(--text-color);
+            border: 1px solid var(--input-border-color);
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-bottom: 20px; /* Space below toggle before options */
+            width: 100%;
+        }
+        #theme-toggle:hover {
+            border-color: var(--input-focus-border-color);
+        }
+
+        .main-content {
+            flex: 1;
+            padding: 25px 35px;
+            background-color: var(--main-content-bg-color);
+            overflow-y: auto;
+        }
+
+        .form-columns {
+            display: flex;
+            gap: 35px; /* Space between columns */
+        }
+
+        .form-column-left,
+        .form-column-right {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        .form-column-left h2,
+        .form-column-right h2 {
+            font-size: 20px;
+            color: var(--header-color);
+            margin-top: 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--section-border-color);
+            padding-bottom: 10px;
+        }
+
+        /* Shared form group styling for consistency */
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 7px;
+            font-weight: 600;
+            font-size: 0.95em; /* Slightly smaller labels */
+            color: var(--label-color);
+        }
+
+        .form-group input[type="text"] {
+            width: calc(100% - 22px); 
+            padding: 9px;
+            background-color: var(--input-bg-color);
+            border: 1px solid var(--input-border-color);
+            color: var(--text-color);
+            border-radius: 4px;
+            font-size: 14px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .form-group input[type="text"]:focus {
+            border-color: var(--input-focus-border-color);
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2); 
+            outline: none;
+        }
+        html.light-mode .form-group input[type="text"]:focus {
+             box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.2);
+        }
+
+        .form-group .description {
+            font-size: 0.8em;
+            color: var(--description-text-color);
+            margin-top: 4px;
+        }
+
+        .error-message {
+            color: var(--error-text-color);
+            background-color: var(--error-bg-color);
+            border: 1px solid var(--error-border-color);
+            padding: 8px;
+            border-radius: 4px;
+            margin-top: 5px;
+            font-size: 0.85em;
+        }
+        
+        .global-error-message {
+            color: var(--error-text-color);
+            background-color: var(--error-bg-color);
+            border: 1px solid var(--error-border-color);
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-size: 0.95em;
+        }
+
+        .submit-button-container {
+            display: flex;
+            justify-content: flex-end; /* Aligns button to the right */
+            padding-top: 20px; /* Space above the button */
+        }
+        .submit-button {
+            background-color: var(--button-bg-color);
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .submit-button:hover {
+            background-color: var(--button-hover-bg-color);
+        }
+
+        .optional-section {
+            border: 1px dashed var(--section-border-color);
+            padding: 18px;
+            margin-top: 25px;
+            border-radius: 6px;
+            background-color: rgba(0,0,0,0.02);
+        }
+        html.light-mode .optional-section {
+            background-color: rgba(230,230,230,0.2); /* Light mode subtle bg */
+        }
+
+        .optional-section h3 {
+            margin-top: 0;
+            font-size: 1.1em; /* Adjusted size */
+            color: var(--header-color);
+            margin-bottom: 12px;
+        }
+        .optional-section .description {
+            margin-bottom: 15px;
+            font-size: 0.85em;
+        }
+
+    </style>
+</head>
+<body>
+    <form th:action="@{/ui/generate}" th:object="${projectRequest}" method="post">
+        <div class="page-wrapper">
+            <div class="sidebar">
+                <img th:src="@{/images/logo.svg}" alt="DDD Generator Logo" class="logo"/>
+                <h1>DDD Generator</h1>
+                <button id="theme-toggle">Toggle Light/Dark Mode</button>
+                
+                <h2>Project Options</h2>
+                <div class="form-group">
+                    <label for="javaVersion">Java Version:</label>
+                    <input type="text" id="javaVersion" th:field="*{javaVersion}" placeholder="17"/>
+                    <div class="description">Default: 21 (Set in service)</div>
+                </div>
+                <div class="form-group">
+                    <label for="springBootVersion">Spring Boot Version:</label>
+                    <input type="text" id="springBootVersion" th:field="*{springBootVersion}" placeholder="3.2.5"/>
+                    <div class="description">Default: 3.5.0 (Set in service)</div>
+                </div>
+                <div class="form-group">
+                    <label for="lombokVersion">Lombok Version (Optional):</label>
+                    <input type="text" id="lombokVersion" th:field="*{lombokVersion}" placeholder="e.g., 1.18.30"/>
+                    <div class="description">Leave blank to use version from Spring Boot parent.</div>
+                </div>
+            </div>
+
+            <div class="main-content">
+                <div th:if="${errorMessage}" class="global-error-message" th:text="${errorMessage}"></div>
+
+                <div class="form-columns">
+                    <div class="form-column-left">
+                        <h2>Project Metadata</h2>
+                        <div class="form-group">
+                            <label for="groupId">Group ID:</label>
+                            <input type="text" id="groupId" th:field="*{groupId}" placeholder="com.example" required/>
+                            <div th:if="${#fields.hasErrors('groupId')}" th:errors="*{groupId}" class="error-message"></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="artifactId">Artifact ID:</label>
+                            <input type="text" id="artifactId" th:field="*{artifactId}" placeholder="demo" required/>
+                            <div th:if="${#fields.hasErrors('artifactId')}" th:errors="*{artifactId}" class="error-message"></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="name">Name:</label>
+                            <input type="text" id="name" th:field="*{name}" placeholder="Demo Project" required/>
+                            <div th:if="${#fields.hasErrors('name')}" th:errors="*{name}" class="error-message"></div>
+                            <div class="description">The display name for your project.</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="description">Description:</label>
+                            <input type="text" id="description" th:field="*{description}" placeholder="A Cool DDD Project" required/>
+                            <div th:if="${#fields.hasErrors('description')}" th:errors="*{description}" class="error-message"></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="packageName">Package Name:</label>
+                            <input type="text" id="packageName" th:field="*{packageName}" placeholder="com.example.demo" required/>
+                            <div th:if="${#fields.hasErrors('packageName')}" th:errors="*{packageName}" class="error-message"></div>
+                            <div class="description">The root package for your project. e.g. com.example.projectname</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="version">Version:</label>
+                            <input type="text" id="version" th:field="*{version}" placeholder="0.0.1-SNAPSHOT"/>
+                            <div class="description">Default: 0.0.1-SNAPSHOT</div>
+                        </div>
+                    </div>
+
+                    <div class="form-column-right">
+                        <h2>Cross-Cutting Library (Optional)</h2> <!-- This h2 was missing -->
+                        <div class="optional-section">
+                            <!-- <h3>Cross-Cutting Library (Optional)</h3> Removing redundant h3 -->
+                            <p class="description">If you have a shared library for cross-cutting concerns (e.g., base entities, common utilities), provide its Maven coordinates and the modules it provides. Ensure this library is accessible in your Maven repository.</p>
+                            <div class="form-group">
+                                <label for="ccGroupId">Library Group ID:</label>
+                                <input type="text" id="ccGroupId" th:field="*{crossCuttingLibrary.groupId}" placeholder="com.mycompany.commons"/>
+                            </div>
+                            <div class="form-group">
+                                <label for="ccName">Library Name (Artifact Prefix):</label>
+                                <input type="text" id="ccName" th:field="*{crossCuttingLibrary.name}" placeholder="hangar"/>
+                                <div class="description">e.g., 'hangar' if artifacts are hangar-domain, hangar-application, hangar-persistence.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="ccVersion">Library Version:</label>
+                                <input type="text" id="ccVersion" th:field="*{crossCuttingLibrary.version}" placeholder="1.0.0"/>
+                            </div>
+                            <div class="form-group">
+                                <label for="ccDependencies">Library Sub-Modules (comma-separated):</label>
+                                <input type="text" id="ccDependencies" th:field="*{crossCuttingLibrary.dependencies}" placeholder="domain,application,persistence"/>
+                                <div class="description">Required: domain, application, persistence. These are suffixes to the library name.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="submit-button-container">
+                    <button type="submit" class="submit-button">Generate Project</button>
+                </div>
+            </div>
+        </div>
+    </form>
+
+    <script>
+        const themeToggle = document.getElementById('theme-toggle');
+        const htmlElement = document.documentElement;
+
+        function applyTheme(theme) {
+            if (theme === 'light') {
+                htmlElement.classList.add('light-mode');
+                themeToggle.textContent = 'Switch to Dark Mode';
+            } else {
+                htmlElement.classList.remove('light-mode');
+                themeToggle.textContent = 'Switch to Light Mode';
+            }
+        }
+
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        applyTheme(savedTheme);
+
+        themeToggle.addEventListener('click', () => {
+            let currentTheme = htmlElement.classList.contains('light-mode') ? 'light' : 'dark';
+            let newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            applyTheme(newTheme);
+            localStorage.setItem('theme', newTheme);
+        });
+    </script>
+</body>
+</html> 

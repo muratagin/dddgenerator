@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>DDD Generator - Schema Selection</title>
+    <style>
+        :root {
+            --bg-color: #2d333b; /* Dark background */
+            --text-color: #cdd9e5; /* Light text */
+            --input-bg-color: #22272e;
+            --input-border-color: #444c56;
+            --input-focus-border-color: #58a6ff;
+            --container-bg-color: #22272e; /* Darker container for sections */
+            --header-color: #58a6ff; /* Accent blue */
+            --button-bg-color: #3fb950; /* Green button */
+            --button-hover-bg-color: #48cb5c;
+            --button-secondary-bg-color: #444c56;
+            --button-secondary-hover-bg-color: #586069;
+            --description-text-color: #8b949e;
+            --error-bg-color: #482224;
+            --error-text-color: #f85149;
+            --error-border-color: #6e2c2f;
+            --label-color: #cdd9e5;
+            --section-border-color: #444c56;
+            --sidebar-bg-color: #22272e;
+            --main-content-bg-color: #2d333b;
+            --info-bg-color: #2c3e50; /* Info message background */
+            --info-text-color: #ecf0f1; /* Info message text */
+            --info-border-color: #34495e; /* Info message border */
+        }
+
+        html.light-mode {
+            --bg-color: #f4f7f6;
+            --text-color: #333;
+            --input-bg-color: #fff;
+            --input-border-color: #ccc;
+            --input-focus-border-color: #007bff;
+            --container-bg-color: #ffffff;
+            --header-color: #007bff;
+            --button-bg-color: #28a745;
+            --button-hover-bg-color: #218838;
+            --button-secondary-bg-color: #6c757d;
+            --button-secondary-hover-bg-color: #5a6268;
+            --description-text-color: #777;
+            --error-bg-color: #f2dede;
+            --error-text-color: #d9534f;
+            --error-border-color: #ebccd1;
+            --label-color: #555;
+            --section-border-color: #ddd;
+            --sidebar-bg-color: #ffffff;
+            --main-content-bg-color: #f4f7f6;
+            --info-bg-color: #e7f3fe;
+            --info-text-color: #31708f;
+            --info-border-color: #bce8f1;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: calc(100vh - 40px);
+        }
+
+        form {
+            width: 100%;
+            max-width: 900px; /* Adjusted max-width for a simpler page */
+        }
+
+        .page-wrapper {
+            display: flex;
+            width: 100%;
+            background-color: var(--container-bg-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            min-height: calc(100vh - 40px);
+        }
+
+        .sidebar {
+            width: 280px;
+            padding: 25px;
+            background-color: var(--sidebar-bg-color);
+            border-right: 1px solid var(--section-border-color);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .sidebar img.logo {
+            width: 70px;
+            height: auto;
+            margin-bottom: 10px;
+            align-self: center;
+        }
+
+        .sidebar h1 {
+            font-size: 22px;
+            color: var(--header-color);
+            margin-bottom: 20px;
+            text-align: center;
+            width: 100%;
+        }
+        
+        #theme-toggle {
+            background: var(--input-bg-color);
+            color: var(--text-color);
+            border: 1px solid var(--input-border-color);
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-bottom: 20px;
+            width: 100%;
+        }
+        #theme-toggle:hover {
+            border-color: var(--input-focus-border-color);
+        }
+
+        .main-content {
+            flex: 1;
+            padding: 25px 35px;
+            background-color: var(--main-content-bg-color);
+            overflow-y: auto;
+        }
+        
+        .main-content h2 {
+            font-size: 20px;
+            color: var(--header-color);
+            margin-top: 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--section-border-color);
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            font-size: 0.95em;
+            color: var(--label-color);
+        }
+
+        .form-group select {
+            width: 100%; 
+            padding: 10px;
+            background-color: var(--input-bg-color);
+            border: 1px solid var(--input-border-color);
+            color: var(--text-color);
+            border-radius: 5px;
+            font-size: 14px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .form-group select:focus {
+            border-color: var(--input-focus-border-color);
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2); 
+            outline: none;
+        }
+        html.light-mode .form-group select:focus {
+             box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.2);
+        }
+
+        .form-group .description {
+            font-size: 0.8em;
+            color: var(--description-text-color);
+            margin-top: 5px;
+        }
+
+        .error-message, .global-error-message {
+            color: var(--error-text-color);
+            background-color: var(--error-bg-color);
+            border: 1px solid var(--error-border-color);
+            padding: 10px 12px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+        }
+        
+        .info-message {
+            color: var(--info-text-color);
+            background-color: var(--info-bg-color);
+            border: 1px solid var(--info-border-color);
+            padding: 10px 12px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+        }
+
+        .button-container {
+            display: flex;
+            justify-content: space-between;
+            padding-top: 20px;
+            margin-top: 20px;
+            border-top: 1px solid var(--section-border-color);
+        }
+        
+        .button {
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .generate-button {
+             background-color: var(--button-bg-color);
+        }
+        .generate-button:hover {
+            background-color: var(--button-hover-bg-color);
+        }
+        .back-button {
+            background-color: var(--button-secondary-bg-color);
+        }
+        .back-button:hover {
+            background-color: var(--button-secondary-hover-bg-color);
+        }
+    </style>
+</head>
+<body>
+    <form th:action="@{/ui/generate-final}" th:object="${environmentalCredentialsRequest}" method="post">
+        <div class="page-wrapper">
+            <div class="sidebar">
+                <img th:src="@{/images/logo.svg}" alt="DDD Generator Logo" class="logo"/>
+                <h1>DDD Generator</h1>
+                <button type="button" id="theme-toggle">Toggle Light/Dark Mode</button>
+                <div th:if="${projectRequestSummary != null}" style="margin-top: 20px; font-size: 0.9em;">
+                    <h4>Project Summary:</h4>
+                    <p th:text="'Name: ' + ${projectRequestSummary.name}"></p>
+                    <p th:text="'Group: ' + ${projectRequestSummary.groupId}"></p>
+                    <p th:text="'Artifact: ' + ${projectRequestSummary.artifactId}"></p>
+                </div>
+            </div>
+
+            <div class="main-content">
+                <h2>Schema Selection (Optional)</h2>
+
+                <div th:if="${globalErrorMessage}" class="global-error-message" th:text="${globalErrorMessage}"></div>
+                
+                <div th:if="${connectionError}" class="error-message">
+                    <p><strong>Database Connection Error:</strong></p>
+                    <p th:text="${connectionError}"></p>
+                    <p>Please check your local database credentials and ensure the database is accessible, then go back and try again. You can also skip this step and proceed without schema selection.</p>
+                </div>
+
+                <div th:if="${noSchemasFoundMessage != null AND connectionError == null}" class="info-message" th:text="${noSchemasFoundMessage}"></div>
+
+                <div th:if="${!#lists.isEmpty(schemas) AND connectionError == null}" class="form-group">
+                    <label for="selectedSchema">Select Schema</label>
+                    <select id="selectedSchema" th:field="*{selectedSchema}">
+                        <option value="">-- Select a Schema (Optional) --</option>
+                        <option th:each="schema : ${schemas}" th:value="${schema}" th:text="${schema}"></option>
+                    </select>
+                    <div class="description">Select the database schema you want to use. This is optional.</div>
+                     <!-- Display error for selectedSchema if any (though not expected for now) -->
+                    <div th:if="${#fields.hasErrors('selectedSchema')}" class="error-message" th:errors="*{selectedSchema}"></div>
+                </div>
+                
+                <!-- Placeholder for displaying tables -->
+                <div id="tablesDisplayArea" style="margin-top: 20px;">
+                    <h4 style="color: var(--header-color); margin-bottom: 10px;" th:if="${!#lists.isEmpty(schemas) AND connectionError == null}">Tables in Selected Schema:</h4>
+                    <ul id="tablesList" style="list-style-type: none; padding-left: 0;">
+                        <!-- Tables will be listed here by JavaScript -->
+                    </ul>
+                    <p id="tablesMessage" style="color: var(--description-text-color);"></p> <!-- For messages like 'No tables found' or errors -->
+                </div>
+
+                <div th:if="${#lists.isEmpty(schemas) AND connectionError == null AND noSchemasFoundMessage == null}" class="form-group">
+                     <p>No schemas to select. You can proceed to generate the project.</p>
+                </div>
+
+
+                <div class="button-container">
+                    <button type="button" class="button back-button" onclick="window.location.href='/ui/environmental-credentials'">Back</button>
+                    <button type="submit" class="button generate-button">Generate Project</button>
+                </div>
+            </div>
+        </div>
+    </form>
+
+    <script>
+        const themeToggle = document.getElementById('theme-toggle');
+        const htmlElement = document.documentElement;
+
+        function applyTheme(theme) {
+            if (theme === 'light') {
+                htmlElement.classList.add('light-mode');
+                themeToggle.textContent = 'Switch to Dark Mode';
+            } else {
+                htmlElement.classList.remove('light-mode');
+                themeToggle.textContent = 'Switch to Light Mode';
+            }
+        }
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        applyTheme(savedTheme);
+
+        themeToggle.addEventListener('click', () => {
+            let currentTheme = htmlElement.classList.contains('light-mode') ? 'light' : 'dark';
+            let newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            applyTheme(newTheme);
+            localStorage.setItem('theme', newTheme);
+        });
+
+        const schemaSelect = document.getElementById('selectedSchema');
+        const tablesList = document.getElementById('tablesList');
+        const tablesMessage = document.getElementById('tablesMessage');
+        const tablesDisplayAreaTitle = document.querySelector('#tablesDisplayArea h4');
+
+        if (schemaSelect) {
+            schemaSelect.addEventListener('change', function() {
+                const selectedSchema = this.value;
+                tablesList.innerHTML = ''; // Clear previous tables
+                tablesMessage.textContent = ''; // Clear previous message
+                if (tablesDisplayAreaTitle) tablesDisplayAreaTitle.style.display = 'none';
+
+                if (selectedSchema) {
+                    if (tablesDisplayAreaTitle) tablesDisplayAreaTitle.style.display = 'block';
+                    tablesMessage.textContent = 'Loading tables...';
+                    fetch(`/ui/get-tables?schemaName=${encodeURIComponent(selectedSchema)}`)
+                        .then(response => {
+                            if (!response.ok) {
+                                return response.json().then(err => { 
+                                    throw new Error(err.error || `HTTP error! Status: ${response.status}`); 
+                                });
+                            }
+                            return response.json();
+                        })
+                        .then(tables => {
+                            tablesMessage.textContent = ''; // Clear loading message
+                            if (tables && tables.length > 0) {
+                                tables.forEach(table => {
+                                    const listItem = document.createElement('li');
+                                    listItem.textContent = table;
+                                    listItem.style.padding = '3px 0';
+                                    listItem.style.fontSize = '0.9em';
+                                    tablesList.appendChild(listItem);
+                                });
+                            } else {
+                                tablesMessage.textContent = 'No tables found in this schema.';
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching tables:', error);
+                            tablesMessage.textContent = `Error fetching tables: ${error.message}`;
+                            tablesList.innerHTML = ''; // Clear any partial list
+                        });
+                } else {
+                     if (tablesDisplayAreaTitle) tablesDisplayAreaTitle.style.display = 'none'; // Hide title if no schema selected
+                     tablesMessage.textContent = 'Select a schema to see its tables.';
+                }
+            });
+            // Initial message if no schema is selected
+            if (!schemaSelect.value && tablesDisplayAreaTitle) {
+                 tablesDisplayAreaTitle.style.display = 'none';
+            }
+            if(!schemaSelect.value){
+                 tablesMessage.textContent = 'Select a schema to see its tables.';
+            }
+        }
+    </script>
+</body>
+</html> 

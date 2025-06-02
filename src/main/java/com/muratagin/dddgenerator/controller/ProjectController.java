@@ -1,6 +1,6 @@
 package com.muratagin.dddgenerator.controller;
 
-import com.muratagin.dddgenerator.dto.EnvironmentalCredentialsRequest;
+import com.muratagin.dddgenerator.domain.request.EnvironmentalCredentialsRequest;
 import com.muratagin.dddgenerator.dto.ProjectRequest;
 import com.muratagin.dddgenerator.service.ProjectService;
 import jakarta.servlet.http.HttpSession;
@@ -18,15 +18,26 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.SessionAttributes;
 import org.springframework.web.bind.support.SessionStatus;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
 import java.io.IOException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 @Controller
 @RequestMapping("/ui")
-@SessionAttributes("projectRequest")
+@SessionAttributes({"projectRequest", "environmentalCredentialsRequest"})
 public class ProjectController {
 
     private final ProjectService projectService;
@@ -73,81 +84,270 @@ public class ProjectController {
     }
 
     @GetMapping("/environmental-credentials")
-    public String showEnvironmentalCredentialsForm(@ModelAttribute("projectRequest") ProjectRequest projectRequest,
-                                                   Model model, HttpSession session) {
-        Object summary = session.getAttribute(SESSION_PROJECT_REQUEST_SUMMARY);
-        if (projectRequest.getName() == null || projectRequest.getName().isEmpty() || summary == null) {
+    public String showEnvironmentalCredentialsForm(Model model, HttpSession session, RedirectAttributes redirectAttributes) {
+        ProjectRequest projectRequest = (ProjectRequest) session.getAttribute(SESSION_PROJECT_REQUEST_SUMMARY);
+
+        if (projectRequest == null || projectRequest.getGroupId() == null || projectRequest.getArtifactId() == null) {
+            redirectAttributes.addFlashAttribute("globalErrorMessage", "Project details are missing. Please start over.");
             return "redirect:/ui/generate-project";
         }
 
-        EnvironmentalCredentialsRequest envRequest = (EnvironmentalCredentialsRequest) model.getAttribute("environmentalCredentialsRequest");
-        if (envRequest == null || envRequest.getApplicationName() == null) { // Check if it needs re-initialization
-             envRequest = new EnvironmentalCredentialsRequest();
-             envRequest.setApplicationName(projectRequest.getName());
-             envRequest.setServerPort("8080");
+        if (!model.containsAttribute("environmentalCredentialsRequest")) {
+            EnvironmentalCredentialsRequest environmentalCredentialsRequest = new EnvironmentalCredentialsRequest();
+            if (projectRequest.getName() != null && !projectRequest.getName().isBlank()) {
+                environmentalCredentialsRequest.setApplicationName(projectRequest.getName());
+            }
+            model.addAttribute("environmentalCredentialsRequest", environmentalCredentialsRequest);
         }
-        
-        model.addAttribute("environmentalCredentialsRequest", envRequest);
-        model.addAttribute(SESSION_PROJECT_REQUEST_SUMMARY, summary);
+        model.addAttribute("projectRequestSummary", projectRequest); // Ensure summary is always available
         model.addAttribute("defaultApplicationName", projectRequest.getName());
-
         return "environmental-credentials";
     }
 
-    @PostMapping("/generate-final")
-    public String generateProjectFinalRedirect(
-            @Valid @ModelAttribute("projectRequest") ProjectRequest projectRequest,
-            BindingResult projectRequestBindingResult,
-            @Valid @ModelAttribute("environmentalCredentialsRequest") EnvironmentalCredentialsRequest environmentalCredentialsRequest,
-            BindingResult envBindingResult,
-            HttpSession session,
-            RedirectAttributes redirectAttributes) {
+    @PostMapping("/process-environmentals")
+    public String processEnvironmentalCredentials(@Valid @ModelAttribute("environmentalCredentialsRequest") EnvironmentalCredentialsRequest environmentalCredentialsRequest,
+                                                  BindingResult bindingResult,
+                                                  @ModelAttribute("projectRequest") ProjectRequest projectRequest,
+                                                  BindingResult projectRequestBindingResult, // To check if projectRequest from session is still valid
+                                                  Model model,
+                                                  HttpSession session,
+                                                  RedirectAttributes redirectAttributes,
+                                                  SessionStatus sessionStatus) {
 
-        if (projectRequestBindingResult.hasErrors()) {
-            redirectAttributes.addFlashAttribute("globalErrorMessage", "Project details are missing or invalid. Please start over.");
-            // No sessionStatus.setComplete() here as projectRequest might be needed if we were to redirect back to first form with its errors.
-            // However, for a full restart, clearing is fine if we always go to a fresh first page.
-            session.removeAttribute(SESSION_PROJECT_REQUEST_SUMMARY); // Clean this one too
+        if (projectRequestBindingResult.hasErrors() || projectRequest.getGroupId() == null) { // Check if session projectRequest is still valid
+            redirectAttributes.addFlashAttribute("globalErrorMessage", "Session expired or project details are invalid. Please start over.");
+            sessionStatus.setComplete(); // Clear session attributes
+            // Manually clear other session attributes if any beyond @SessionAttributes
+            session.removeAttribute(SESSION_PROJECT_REQUEST_SUMMARY);
             return "redirect:/ui/generate-project";
         }
 
-        if (envBindingResult.hasErrors()) {
-            redirectAttributes.addFlashAttribute("org.springframework.validation.BindingResult.environmentalCredentialsRequest", envBindingResult);
-            redirectAttributes.addFlashAttribute("environmentalCredentialsRequest", environmentalCredentialsRequest);
-            redirectAttributes.addFlashAttribute(SESSION_PROJECT_REQUEST_SUMMARY, session.getAttribute(SESSION_PROJECT_REQUEST_SUMMARY));
-            if (projectRequest != null) {
-                redirectAttributes.addFlashAttribute("defaultApplicationName", projectRequest.getName());
-            }
-            return "redirect:/ui/environmental-credentials";
+        if (bindingResult.hasErrors()) {
+            model.addAttribute("projectRequestSummary", projectRequest);
+            model.addAttribute("defaultApplicationName", projectRequest.getName());
+            return "environmental-credentials";
         }
 
+        // Store in session for the next step (schema selection or direct generation)
+        session.setAttribute("environmentalCredentialsRequest", environmentalCredentialsRequest);
+
+
+        boolean hasLocalDbDetails = environmentalCredentialsRequest.getLocalDatasourceUrl() != null && !environmentalCredentialsRequest.getLocalDatasourceUrl().isBlank() &&
+                                    environmentalCredentialsRequest.getLocalDatasourceUsername() != null && !environmentalCredentialsRequest.getLocalDatasourceUsername().isBlank();
+                                    // Password can be blank
+
+        if (hasLocalDbDetails) {
+            return "redirect:/ui/schema-selection";
+        } else {
+            // No local DB details, proceed to generation
+            try {
+                byte[] zipBytes = projectService.generateProjectZip(projectRequest, environmentalCredentialsRequest);
+                String fileName = projectRequest.getArtifactId() + ".zip";
+
+                session.setAttribute(SESSION_PROJECT_ZIP_BYTES, zipBytes);
+                session.setAttribute(SESSION_PROJECT_FILE_NAME, fileName);
+                return "redirect:/ui/download-page";
+            } catch (IOException | IllegalArgumentException e) {
+                redirectAttributes.addFlashAttribute("globalErrorMessage", "Error generating project: " + e.getMessage());
+                // Don't clear sessionStatus here, allow user to go back and correct
+                return "redirect:/ui/generate-project"; // Or back to environmental if more appropriate
+            }
+        }
+    }
+
+    @GetMapping("/schema-selection")
+    public String showSchemaSelectionForm(Model model,
+                                          @ModelAttribute("projectRequest") ProjectRequest projectRequest,
+                                          @ModelAttribute("environmentalCredentialsRequest") EnvironmentalCredentialsRequest environmentalCredentialsRequest,
+                                          HttpSession session,
+                                          RedirectAttributes redirectAttributes) {
+
+        if (projectRequest == null || projectRequest.getGroupId() == null ||
+            environmentalCredentialsRequest == null || environmentalCredentialsRequest.getLocalDatasourceUrl() == null) {
+            redirectAttributes.addFlashAttribute("globalErrorMessage", "Project or environmental details are missing. Please start over.");
+            return "redirect:/ui/generate-project";
+        }
+
+        model.addAttribute("projectRequestSummary", projectRequest); // For sidebar display
+
+        List<String> schemas = new ArrayList<>();
+        String connectionError = null;
+        Connection connection = null;
+
         try {
-            if (environmentalCredentialsRequest.getServerPort() == null || environmentalCredentialsRequest.getServerPort().isEmpty()) {
-                environmentalCredentialsRequest.setServerPort("8080");
+            // Ensure PostgreSQL driver is loaded
+            Class.forName("org.postgresql.Driver");
+            connection = DriverManager.getConnection(
+                    environmentalCredentialsRequest.getLocalDatasourceUrl(),
+                    environmentalCredentialsRequest.getLocalDatasourceUsername(),
+                    environmentalCredentialsRequest.getLocalDatasourcePassword()
+            );
+            Statement statement = connection.createStatement();
+            // Query to list schemas (excluding system schemas)
+            ResultSet resultSet = statement.executeQuery(
+                "SELECT schema_name FROM information_schema.schemata " +
+                "WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') " +
+                "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%';"
+            );
+            while (resultSet.next()) {
+                schemas.add(resultSet.getString("schema_name"));
             }
-            // bannerMode is hardcoded in service, no need to check here
-            if (environmentalCredentialsRequest.getApplicationName() == null || environmentalCredentialsRequest.getApplicationName().isEmpty()) {
-                environmentalCredentialsRequest.setApplicationName(projectRequest.getName());
+            resultSet.close();
+            statement.close();
+        } catch (ClassNotFoundException e) {
+            connectionError = "PostgreSQL JDBC driver not found. Please ensure it's in the classpath.";
+            // Log this error server-side as well
+        } catch (SQLException e) {
+            connectionError = "Error connecting to database or fetching schemas: " + e.getMessage();
+             // Log this error server-side as well
+        } finally {
+            if (connection != null) {
+                try {
+                    connection.close();
+                } catch (SQLException e) {
+                    // Log error closing connection
+                }
             }
+        }
 
-            byte[] projectZipBytes = projectService.generateProjectZip(projectRequest, environmentalCredentialsRequest);
-            String fileName = (projectRequest.getArtifactId() != null ? projectRequest.getArtifactId() : "project") + ".zip";
+        if (connectionError != null) {
+            model.addAttribute("connectionError", connectionError);
+        }
+        if (schemas.isEmpty() && connectionError == null) {
+             model.addAttribute("noSchemasFoundMessage", "No user schemas found in the database, or unable to list them. You can still proceed without selecting a schema.");
+        }
 
-            session.setAttribute(SESSION_PROJECT_ZIP_BYTES, projectZipBytes);
+        model.addAttribute("schemas", schemas);
+        // environmentalCredentialsRequest is already added via @ModelAttribute
+        return "schema-selection"; // Name of the new Thymeleaf template
+    }
+
+    @GetMapping("/get-tables")
+    @ResponseBody
+    public ResponseEntity<Object> getTablesForSchema(@RequestParam("schemaName") String schemaName,
+                                                   @ModelAttribute("environmentalCredentialsRequest") EnvironmentalCredentialsRequest environmentalCredentialsRequest,
+                                                   HttpSession session) {
+        ProjectRequest projectRequest = (ProjectRequest) session.getAttribute("projectRequest");
+
+        if (projectRequest == null || projectRequest.getGroupId() == null ||
+            environmentalCredentialsRequest == null || environmentalCredentialsRequest.getLocalDatasourceUrl() == null ||
+            schemaName == null || schemaName.isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", "Missing project, environmental details, or schema name."));
+        }
+
+        List<String> tables = new ArrayList<>();
+        String connectionError = null;
+        Connection connection = null;
+
+        try {
+            Class.forName("org.postgresql.Driver");
+            connection = DriverManager.getConnection(
+                    environmentalCredentialsRequest.getLocalDatasourceUrl(),
+                    environmentalCredentialsRequest.getLocalDatasourceUsername(),
+                    environmentalCredentialsRequest.getLocalDatasourcePassword()
+            );
+            // Use PreparedStatement to prevent SQL injection
+            try (PreparedStatement preparedStatement = connection.prepareStatement(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name")) {
+                preparedStatement.setString(1, schemaName);
+                try (ResultSet resultSet = preparedStatement.executeQuery()) {
+                    while (resultSet.next()) {
+                        tables.add(resultSet.getString("table_name"));
+                    }
+                }
+            }
+        } catch (ClassNotFoundException e) {
+            connectionError = "PostgreSQL JDBC driver not found.";
+            // Log this error server-side as well
+        } catch (SQLException e) {
+            connectionError = "Error connecting to database or fetching tables: " + e.getMessage();
+            // Log this error server-side as well
+        } finally {
+            if (connection != null) {
+                try {
+                    connection.close();
+                } catch (SQLException e) {
+                    // Log error closing connection
+                }
+            }
+        }
+
+        if (connectionError != null) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", connectionError));
+        }
+        return ResponseEntity.ok(tables);
+    }
+
+    @PostMapping("/generate-final")
+    public String generateProjectFinal(@ModelAttribute("projectRequest") ProjectRequest projectRequest,
+                                       @Valid @ModelAttribute("environmentalCredentialsRequest") EnvironmentalCredentialsRequest environmentalCredentialsRequest,
+                                       BindingResult bindingResult, // Binding result for environmentalCredentialsRequest
+                                       HttpSession session,
+                                       RedirectAttributes redirectAttributes,
+                                       SessionStatus sessionStatus) {
+
+        // Re-check projectRequest from session as it might have been cleared or become invalid if user navigates weirdly
+        ProjectRequest sessionProjectRequest = (ProjectRequest) session.getAttribute("projectRequest");
+        if (sessionProjectRequest == null || sessionProjectRequest.getGroupId() == null) {
+             redirectAttributes.addFlashAttribute("globalErrorMessage", "Session expired or project details are invalid. Please start over.");
+             sessionStatus.setComplete();
+             session.removeAttribute(SESSION_PROJECT_REQUEST_SUMMARY);
+             session.removeAttribute("environmentalCredentialsRequest"); // also clear this
+             return "redirect:/ui/generate-project";
+        }
+        
+        // If coming from schema selection, environmentalCredentialsRequest might have selectedSchema.
+        // If bindingResult has errors specifically for fields on schema-selection page (if any were validated there), handle them.
+        // For now, we assume schema selection itself doesn't have complex validation beyond choosing a schema.
+        if (bindingResult.hasErrors()) {
+            // This case would typically be if schema selection introduced new validated fields
+            // and they failed. For now, schema is just a string.
+            // If there are errors on environmentalCredentialsRequest, redirect back to the relevant page.
+            // Since generate-final can be hit after environmental-credentials OR schema-selection,
+            // we need to be careful.
+            // For now, if local DB details were present, assume error is on schema page or environmental page.
+            boolean hasLocalDbDetails = environmentalCredentialsRequest.getLocalDatasourceUrl() != null && !environmentalCredentialsRequest.getLocalDatasourceUrl().isBlank();
+            if (hasLocalDbDetails) {
+                 // If errors exist and local DB details were provided, user might have been on schema-selection
+                 // or environmental-credentials. Let's redirect to schema-selection if it's an option,
+                 // otherwise to environmental-credentials.
+                 // This logic might need refinement based on specific errors.
+                 // For now, a simple redirect to schema-selection if local DB details are present.
+                 redirectAttributes.addFlashAttribute("org.springframework.validation.BindingResult.environmentalCredentialsRequest", bindingResult);
+                 redirectAttributes.addFlashAttribute("environmentalCredentialsRequest", environmentalCredentialsRequest);
+                 redirectAttributes.addFlashAttribute("projectRequestSummary", sessionProjectRequest); // Pass summary again
+                 return "redirect:/ui/schema-selection"; // Or environmental-credentials if schema selection was skipped
+            } else {
+                // Errors but no local DB details, implies error from environmental-credentials page
+                redirectAttributes.addFlashAttribute("org.springframework.validation.BindingResult.environmentalCredentialsRequest", bindingResult);
+                redirectAttributes.addFlashAttribute("environmentalCredentialsRequest", environmentalCredentialsRequest);
+                redirectAttributes.addFlashAttribute("projectRequestSummary", sessionProjectRequest);
+                redirectAttributes.addFlashAttribute("defaultApplicationName", sessionProjectRequest.getName());
+                return "redirect:/ui/environmental-credentials";
+            }
+        }
+
+
+        try {
+            byte[] zipBytes = projectService.generateProjectZip(sessionProjectRequest, environmentalCredentialsRequest);
+            String fileName = sessionProjectRequest.getArtifactId() + ".zip";
+
+            session.setAttribute(SESSION_PROJECT_ZIP_BYTES, zipBytes);
             session.setAttribute(SESSION_PROJECT_FILE_NAME, fileName);
-            
-            // projectRequest and projectRequestSummary are kept in session for the download page to display info
-            // They will be cleared by SessionStatus.setComplete() after the actual download
 
+            // environmentalCredentialsRequest will be cleared from session by SessionStatus.setComplete()
+            // which is called in /perform-download, along with projectRequest.
             return "redirect:/ui/download-page";
 
         } catch (IOException | IllegalArgumentException e) {
-            redirectAttributes.addFlashAttribute("globalErrorMessage", "Error during project generation: " + e.getMessage());
-            // Don't clear @SessionAttributes ("projectRequest") here, let user go back to env page from start
-            session.removeAttribute(SESSION_PROJECT_REQUEST_SUMMARY);
-            session.removeAttribute(SESSION_PROJECT_ZIP_BYTES); // Clean up potentially stored bytes
-            session.removeAttribute(SESSION_PROJECT_FILE_NAME);
-            return "redirect:/ui/generate-project"; 
+            redirectAttributes.addFlashAttribute("globalErrorMessage", "Error generating project: " + e.getMessage());
+            // Don't clear sessionStatus here, allow user to go back and correct
+            // Redirect to the page that submitted here. If schema selection was involved, that's the one.
+             boolean hasLocalDbDetails = environmentalCredentialsRequest.getLocalDatasourceUrl() != null && !environmentalCredentialsRequest.getLocalDatasourceUrl().isBlank();
+            if (hasLocalDbDetails) {
+                return "redirect:/ui/schema-selection";
+            }
+            return "redirect:/ui/environmental-credentials";
         }
     }
 

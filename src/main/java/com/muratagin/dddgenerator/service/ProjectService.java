@@ -1,8 +1,8 @@
 package com.muratagin.dddgenerator.service;
 
+import com.muratagin.dddgenerator.domain.request.EnvironmentalCredentialsRequest;
 import com.muratagin.dddgenerator.dto.ProjectRequest;
 import com.muratagin.dddgenerator.dto.CrossCuttingLibraryRequest;
-import com.muratagin.dddgenerator.dto.EnvironmentalCredentialsRequest;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -27,8 +27,10 @@ public class ProjectService {
     private static final String DEFAULT_JAVA_VERSION = "21";
     private static final String DEFAULT_SPRING_BOOT_VERSION = "3.3.1";
 
-    public byte[] generateProjectZip(ProjectRequest request, EnvironmentalCredentialsRequest envRequest) throws IOException {
-        CrossCuttingLibraryRequest crossCuttingLib = request.getCrossCuttingLibrary();
+    public byte[] generateProjectZip(ProjectRequest projectRequest, EnvironmentalCredentialsRequest environmentalCredentialsRequest) throws IOException {
+        String tempDirName = "project-" + projectRequest.getArtifactId() + "-" + System.currentTimeMillis();
+        Path tempDirPath = Files.createTempDirectory(tempDirName);
+        CrossCuttingLibraryRequest crossCuttingLib = projectRequest.getCrossCuttingLibrary();
         boolean useCrossCuttingLibrary = false;
         // Validation for CrossCuttingLibrary is now handled by @ValidCrossCuttingLibrary annotation on ProjectRequest
         // and @Valid on the crossCuttingLibrary field itself for its internal constraints (if any were added).
@@ -53,30 +55,30 @@ public class ProjectService {
         }
         // If crossCuttingLib is null or not populated, useCrossCuttingLibrary remains false.
 
-        String serverPort = (envRequest.getServerPort() != null && !envRequest.getServerPort().isEmpty()) ? envRequest.getServerPort() : "8080";
-        String bannerMode = (envRequest.getBannerMode() != null && !envRequest.getBannerMode().isEmpty()) ? envRequest.getBannerMode() : "off";
-        String springAppName = (envRequest.getApplicationName() != null && !envRequest.getApplicationName().isEmpty()) ? envRequest.getApplicationName() : request.getName();
+        String serverPort = (environmentalCredentialsRequest.getServerPort() != null && !environmentalCredentialsRequest.getServerPort().isEmpty()) ? environmentalCredentialsRequest.getServerPort() : "8080";
+        String bannerMode = (environmentalCredentialsRequest.getBannerMode() != null && !environmentalCredentialsRequest.getBannerMode().isEmpty()) ? environmentalCredentialsRequest.getBannerMode() : "off";
+        String springAppName = (environmentalCredentialsRequest.getApplicationName() != null && !environmentalCredentialsRequest.getApplicationName().isEmpty()) ? environmentalCredentialsRequest.getApplicationName() : projectRequest.getName();
 
-        Path tempDir = Files.createTempDirectory("ddd-project-" + request.getArtifactId() + "-");
-        String rootArtifactId = request.getArtifactId();
-        String groupId = request.getGroupId();
-        String version = (request.getVersion() != null && !request.getVersion().isEmpty()) ? request.getVersion() : DEFAULT_VERSION;
-        String description = request.getDescription();
+        Path tempDir = Files.createTempDirectory("ddd-project-" + projectRequest.getArtifactId() + "-");
+        String rootArtifactId = projectRequest.getArtifactId();
+        String groupId = projectRequest.getGroupId();
+        String version = (projectRequest.getVersion() != null && !projectRequest.getVersion().isEmpty()) ? projectRequest.getVersion() : DEFAULT_VERSION;
+        String description = projectRequest.getDescription();
 
-        String originalPackageName = request.getPackageName().toLowerCase();
+        String originalPackageName = projectRequest.getPackageName().toLowerCase();
         String sanitizedPackageName = originalPackageName.replace('-', '_');
 
         String basePackagePath = sanitizedPackageName.replace('.', File.separatorChar);
         String basePackageNameForClassGen = sanitizedPackageName;
 
         Path pomFile = Paths.get(tempDir.toString(), "pom.xml");
-        Files.writeString(pomFile, generateRootPomXmlContent(request, version));
+        Files.writeString(pomFile, generateRootPomXmlContent(projectRequest, version));
 
         String containerArtifactId = rootArtifactId + "-container";
         Path containerModuleDir = Paths.get(tempDir.toString(), containerArtifactId);
         Files.createDirectories(containerModuleDir);
         Path containerPom = Paths.get(containerModuleDir.toString(), "pom.xml");
-        Files.writeString(containerPom, generateContainerPomXmlContent(request, containerArtifactId, rootArtifactId, version));
+        Files.writeString(containerPom, generateContainerPomXmlContent(projectRequest, containerArtifactId, rootArtifactId, version));
         Path containerMainJavaDir = Paths.get(containerModuleDir.toString(), "src", "main", "java", basePackagePath, "container");
         Files.createDirectories(containerMainJavaDir);
         Path containerAppFile = Paths.get(containerMainJavaDir.toString(), capitalize(rootArtifactId) + "ContainerApplication.java");
@@ -88,37 +90,37 @@ public class ProjectService {
 
         // Always generate application-local.yml; the method provides defaults if details are not entered.
         Path applicationLocalYml = Paths.get(containerResources.toString(), "application-local.yml");
-        Files.writeString(applicationLocalYml, generateApplicationLocalYmlContent(envRequest));
+        Files.writeString(applicationLocalYml, generateApplicationLocalYmlContent(environmentalCredentialsRequest));
 
         // Conditionally generate profile-specific application.yml files
-        if (envRequest.isGenerateDev()) {
+        if (environmentalCredentialsRequest.isGenerateDev()) {
             Path profileApplicationYml = Paths.get(containerResources.toString(), "application-dev.yml");
-            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(request.getName(), "dev"));
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(projectRequest.getName(), "dev"));
         }
-        if (envRequest.isGenerateTest()) {
+        if (environmentalCredentialsRequest.isGenerateTest()) {
             Path profileApplicationYml = Paths.get(containerResources.toString(), "application-test.yml");
-            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(request.getName(), "test"));
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(projectRequest.getName(), "test"));
         }
-        if (envRequest.isGenerateUat()) {
+        if (environmentalCredentialsRequest.isGenerateUat()) {
             Path profileApplicationYml = Paths.get(containerResources.toString(), "application-uat.yml");
-            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(request.getName(), "uat"));
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(projectRequest.getName(), "uat"));
         }
-        if (envRequest.isGenerateProd()) {
+        if (environmentalCredentialsRequest.isGenerateProd()) {
             Path profileApplicationYml = Paths.get(containerResources.toString(), "application-prod.yml");
-            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(request.getName(), "prod"));
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(projectRequest.getName(), "prod"));
         }
 
         String domainParentArtifactId = rootArtifactId + "-domain";
         Path domainModuleDir = Paths.get(tempDir.toString(), domainParentArtifactId);
         Files.createDirectories(domainModuleDir);
         Path domainParentPom = Paths.get(domainModuleDir.toString(), "pom.xml");
-        Files.writeString(domainParentPom, generateDomainParentPomXmlContent(request, domainParentArtifactId, rootArtifactId, version));
+        Files.writeString(domainParentPom, generateDomainParentPomXmlContent(projectRequest, domainParentArtifactId, rootArtifactId, version));
 
         String domainCoreArtifactId = rootArtifactId + "-domain-core";
         Path domainCoreModuleDir = Paths.get(domainModuleDir.toString(), domainCoreArtifactId);
         Files.createDirectories(domainCoreModuleDir);
         Path domainCorePom = Paths.get(domainCoreModuleDir.toString(), "pom.xml");
-        Files.writeString(domainCorePom, generateDomainCorePomXmlContent(request, domainCoreArtifactId, domainParentArtifactId, version));
+        Files.writeString(domainCorePom, generateDomainCorePomXmlContent(projectRequest, domainCoreArtifactId, domainParentArtifactId, version));
         Path domainCoreMainJava = Paths.get(domainCoreModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "core");
         Files.createDirectories(domainCoreMainJava);
 
@@ -135,7 +137,7 @@ public class ProjectService {
         Path appServiceModuleDir = Paths.get(domainModuleDir.toString(), appServiceArtifactId);
         Files.createDirectories(appServiceModuleDir);
         Path appServicePom = Paths.get(appServiceModuleDir.toString(), "pom.xml");
-        Files.writeString(appServicePom, generateApplicationServicePomXmlContent(request, appServiceArtifactId, domainParentArtifactId, domainCoreArtifactId, version));
+        Files.writeString(appServicePom, generateApplicationServicePomXmlContent(projectRequest, appServiceArtifactId, domainParentArtifactId, domainCoreArtifactId, version));
         Path appServiceMainJava = Paths.get(appServiceModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "applicationservice");
         Files.createDirectories(appServiceMainJava);
         Files.createFile(Paths.get(appServiceMainJava.toString(), ".gitkeep"));
@@ -144,13 +146,13 @@ public class ProjectService {
         Path infraModuleDir = Paths.get(tempDir.toString(), infraParentArtifactId);
         Files.createDirectories(infraModuleDir);
         Path infraParentPom = Paths.get(infraModuleDir.toString(), "pom.xml");
-        Files.writeString(infraParentPom, generateInfrastructureParentPomXmlContent(request, infraParentArtifactId, rootArtifactId, version));
+        Files.writeString(infraParentPom, generateInfrastructureParentPomXmlContent(projectRequest, infraParentArtifactId, rootArtifactId, version));
 
         String persistenceArtifactId = rootArtifactId + "-persistence";
         Path persistenceModuleDir = Paths.get(infraModuleDir.toString(), persistenceArtifactId);
         Files.createDirectories(persistenceModuleDir);
         Path persistencePom = Paths.get(persistenceModuleDir.toString(), "pom.xml");
-        Files.writeString(persistencePom, generatePersistencePomXmlContent(request, persistenceArtifactId, infraParentArtifactId, appServiceArtifactId, version));
+        Files.writeString(persistencePom, generatePersistencePomXmlContent(projectRequest, persistenceArtifactId, infraParentArtifactId, appServiceArtifactId, version));
         Path persistenceMainJava = Paths.get(persistenceModuleDir.toString(), "src", "main", "java", basePackagePath, "infrastructure", "persistence");
         Files.createDirectories(persistenceMainJava);
 
@@ -166,7 +168,7 @@ public class ProjectService {
         Path appLayerModuleDir = Paths.get(tempDir.toString(), appLayerArtifactId);
         Files.createDirectories(appLayerModuleDir);
         Path appLayerPom = Paths.get(appLayerModuleDir.toString(), "pom.xml");
-        Files.writeString(appLayerPom, generateApplicationLayerPomXmlContent(request, appLayerArtifactId, rootArtifactId, appServiceArtifactId, version));
+        Files.writeString(appLayerPom, generateApplicationLayerPomXmlContent(projectRequest, appLayerArtifactId, rootArtifactId, appServiceArtifactId, version));
         Path appLayerMainJava = Paths.get(appLayerModuleDir.toString(), "src", "main", "java", basePackagePath, "application");
         Files.createDirectories(appLayerMainJava);
 
@@ -479,23 +481,23 @@ public class ProjectService {
         String appName = capitalize(rootArtifactId) + capitalize(moduleSuffix) + "Application";
         String moduleSpecificPackage = basePackageName + "." + moduleSuffix.replace("-", "");
 
-        return String.format(
-                "package %s;\\n\\n" +
-                "import org.springframework.boot.SpringApplication;\\n" +
-                "import org.springframework.boot.autoconfigure.SpringBootApplication;\\n" +
-                "import org.springframework.context.annotation.ComponentScan;\\n\\n" +
-                "@SpringBootApplication\\n" +
-                "@ComponentScan(basePackages = {\\\"%s\\\"})\\n" +
-                "public class %s {\\n\\n" +
-                "    public static void main(String[] args) {\\n" +
-                "        SpringApplication.run(%s.class, args);\\n" +
-                "    }\\n\\n" +
-                "}\\n",
-                moduleSpecificPackage,
-                basePackageName,
-                appName,
-                appName
-        );
+        return String.format("""
+package %s;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.ComponentScan;
+
+@SpringBootApplication
+@ComponentScan(basePackages = {"%s"})
+public class %s {
+
+    public static void main(String[] args) {
+        SpringApplication.run(%s.class, args);
+    }
+
+}
+""", moduleSpecificPackage, basePackageName, appName, appName).stripIndent();
     }
 
     private String generateApplicationYmlContent(String springApplicationName, String serverPort, String bannerMode) {

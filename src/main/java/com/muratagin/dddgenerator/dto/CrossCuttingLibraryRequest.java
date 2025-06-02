@@ -49,6 +49,28 @@ public class CrossCuttingLibraryRequest {
     }
 
     public void setDependencies(List<String> dependencies) {
-        this.dependencies = dependencies;
+        if (dependencies != null) {
+            this.dependencies = dependencies.stream()
+                                          .filter(dep -> dep != null && !dep.trim().isEmpty())
+                                          .collect(java.util.stream.Collectors.toList());
+        } else {
+            this.dependencies = null;
+        }
+    }
+
+    // Helper method to check if any field is populated
+    public boolean isPopulated() {
+        return (groupId != null && !groupId.isEmpty()) ||
+               (name != null && !name.isEmpty()) ||
+               (version != null && !version.isEmpty()) ||
+               (dependencies != null && !dependencies.isEmpty());
+    }
+
+    // Helper method to check if all required fields are populated, assuming it's intended to be used
+    public boolean isFullyPopulated() {
+        return (groupId != null && !groupId.isEmpty()) &&
+               (name != null && !name.isEmpty()) &&
+               (version != null && !version.isEmpty()) &&
+               (dependencies != null && !dependencies.isEmpty());
     }
 } 

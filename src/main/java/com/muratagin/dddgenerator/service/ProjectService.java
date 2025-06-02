@@ -2,6 +2,7 @@ package com.muratagin.dddgenerator.service;
 
 import com.muratagin.dddgenerator.dto.ProjectRequest;
 import com.muratagin.dddgenerator.dto.CrossCuttingLibraryRequest;
+import com.muratagin.dddgenerator.dto.EnvironmentalCredentialsRequest;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -17,56 +18,60 @@ import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 public class ProjectService {
 
     private static final String DEFAULT_VERSION = "0.0.1-SNAPSHOT";
+    private static final String DEFAULT_JAVA_VERSION = "21";
+    private static final String DEFAULT_SPRING_BOOT_VERSION = "3.3.1";
 
-    public byte[] generateProjectZip(ProjectRequest request) throws IOException {
-        // Validate CrossCuttingLibrary early
+    public byte[] generateProjectZip(ProjectRequest request, EnvironmentalCredentialsRequest envRequest) throws IOException {
         CrossCuttingLibraryRequest crossCuttingLib = request.getCrossCuttingLibrary();
         boolean useCrossCuttingLibrary = false;
+        // Validation for CrossCuttingLibrary is now handled by @ValidCrossCuttingLibrary annotation on ProjectRequest
+        // and @Valid on the crossCuttingLibrary field itself for its internal constraints (if any were added).
+        // The custom validator CrossCuttingLibraryValidator handles the conditional logic.
+        
+        // Determine if a valid, fully populated cross-cutting library is being used.
         if (crossCuttingLib != null && 
-            crossCuttingLib.getName() != null && !crossCuttingLib.getName().isEmpty() &&
-            crossCuttingLib.getGroupId() != null && !crossCuttingLib.getGroupId().isEmpty() &&
-            crossCuttingLib.getVersion() != null && !crossCuttingLib.getVersion().isEmpty() &&
-            crossCuttingLib.getDependencies() != null && !crossCuttingLib.getDependencies().isEmpty()) {
-            
-            useCrossCuttingLibrary = true; // Assume valid unless checks fail
+            crossCuttingLib.isPopulated() && 
+            crossCuttingLib.isFullyPopulated()) {
+            // Further check if dependencies are correct (this part is also in the custom validator but good for safety here)
             List<String> requiredDeps = Arrays.asList("domain", "application", "persistence");
             Set<String> providedDeps = new HashSet<>(crossCuttingLib.getDependencies());
-            if (!providedDeps.containsAll(requiredDeps)) {
-                throw new IllegalArgumentException("Cross-cutting library dependencies must include 'domain', 'application', and 'persistence'.");
+            if (providedDeps.containsAll(requiredDeps)) {
+                useCrossCuttingLibrary = true;
+            } else {
+                // This case should ideally be caught by the validator, but as a safeguard:
+                throw new IllegalArgumentException("Cross-cutting library dependencies must include 'domain', 'application', and 'persistence'. This should have been caught by earlier validation.");
             }
-        } else if (crossCuttingLib != null && 
-                   ( (crossCuttingLib.getName() != null && !crossCuttingLib.getName().isEmpty()) || 
-                     (crossCuttingLib.getGroupId() != null && !crossCuttingLib.getGroupId().isEmpty()) || 
-                     (crossCuttingLib.getVersion() != null && !crossCuttingLib.getVersion().isEmpty()) || 
-                     (crossCuttingLib.getDependencies() != null && !crossCuttingLib.getDependencies().isEmpty()) )) {
-            // If any part of crossCuttingLibrary is specified, but not all, it's an error
-            throw new IllegalArgumentException("Cross-cutting library details (name, groupId, version, dependencies) are incomplete or invalid.");
+        } else if (crossCuttingLib != null && crossCuttingLib.isPopulated() && !crossCuttingLib.isFullyPopulated()){
+            // This case should also be caught by the validator.
+            throw new IllegalArgumentException("Cross-cutting library details are incomplete. This should have been caught by earlier validation.");
         }
-        // If crossCuttingLib is null or all its fields are null/empty, useCrossCuttingLibrary remains false, and defaults will be used.
+        // If crossCuttingLib is null or not populated, useCrossCuttingLibrary remains false.
+
+        String serverPort = (envRequest.getServerPort() != null && !envRequest.getServerPort().isEmpty()) ? envRequest.getServerPort() : "8080";
+        String bannerMode = (envRequest.getBannerMode() != null && !envRequest.getBannerMode().isEmpty()) ? envRequest.getBannerMode() : "off";
+        String springAppName = (envRequest.getApplicationName() != null && !envRequest.getApplicationName().isEmpty()) ? envRequest.getApplicationName() : request.getName();
 
         Path tempDir = Files.createTempDirectory("ddd-project-" + request.getArtifactId() + "-");
         String rootArtifactId = request.getArtifactId();
         String groupId = request.getGroupId();
         String version = (request.getVersion() != null && !request.getVersion().isEmpty()) ? request.getVersion() : DEFAULT_VERSION;
         String description = request.getDescription();
-        
-        // Sanitize package name: replace hyphens with underscores for Java compatibility
-        String originalPackageName = request.getPackageName();
+
+        String originalPackageName = request.getPackageName().toLowerCase();
         String sanitizedPackageName = originalPackageName.replace('-', '_');
 
         String basePackagePath = sanitizedPackageName.replace('.', File.separatorChar);
-        String basePackageNameForClassGen = sanitizedPackageName; // Use sanitized version for class gen
+        String basePackageNameForClassGen = sanitizedPackageName;
 
-        // 1. Create Root Project Structure
         Path pomFile = Paths.get(tempDir.toString(), "pom.xml");
         Files.writeString(pomFile, generateRootPomXmlContent(request, version));
 
-        // 2. Create Container Module
         String containerArtifactId = rootArtifactId + "-container";
         Path containerModuleDir = Paths.get(tempDir.toString(), containerArtifactId);
         Files.createDirectories(containerModuleDir);
@@ -75,27 +80,40 @@ public class ProjectService {
         Path containerMainJavaDir = Paths.get(containerModuleDir.toString(), "src", "main", "java", basePackagePath, "container");
         Files.createDirectories(containerMainJavaDir);
         Path containerAppFile = Paths.get(containerMainJavaDir.toString(), capitalize(rootArtifactId) + "ContainerApplication.java");
-        Files.writeString(containerAppFile, generateContainerApplicationJavaContent(request, rootArtifactId, "container"));
+        Files.writeString(containerAppFile, generateContainerApplicationJavaContent(basePackageNameForClassGen, rootArtifactId, "container"));
         Path containerResources = Paths.get(containerModuleDir.toString(), "src", "main", "resources");
         Files.createDirectories(containerResources);
         Path applicationYml = Paths.get(containerResources.toString(), "application.yml");
-        Files.writeString(applicationYml, generateApplicationYmlContent(rootArtifactId));
+        Files.writeString(applicationYml, generateApplicationYmlContent(springAppName, serverPort, bannerMode));
 
-        // Create profile-specific application.yml files
-        List<String> profiles = Arrays.asList("local", "dev", "test", "uat", "prod");
-        for (String profile : profiles) {
-            Path profileApplicationYml = Paths.get(containerResources.toString(), "application-" + profile + ".yml");
-            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(rootArtifactId, profile));
+        // Always generate application-local.yml; the method provides defaults if details are not entered.
+        Path applicationLocalYml = Paths.get(containerResources.toString(), "application-local.yml");
+        Files.writeString(applicationLocalYml, generateApplicationLocalYmlContent(envRequest));
+
+        // Conditionally generate profile-specific application.yml files
+        if (envRequest.isGenerateDev()) {
+            Path profileApplicationYml = Paths.get(containerResources.toString(), "application-dev.yml");
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(request.getName(), "dev"));
+        }
+        if (envRequest.isGenerateTest()) {
+            Path profileApplicationYml = Paths.get(containerResources.toString(), "application-test.yml");
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(request.getName(), "test"));
+        }
+        if (envRequest.isGenerateUat()) {
+            Path profileApplicationYml = Paths.get(containerResources.toString(), "application-uat.yml");
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(request.getName(), "uat"));
+        }
+        if (envRequest.isGenerateProd()) {
+            Path profileApplicationYml = Paths.get(containerResources.toString(), "application-prod.yml");
+            Files.writeString(profileApplicationYml, generateProfileApplicationYmlContent(request.getName(), "prod"));
         }
 
-        // 3. Create Domain Module (parent pom for domain-core and application-service)
         String domainParentArtifactId = rootArtifactId + "-domain";
         Path domainModuleDir = Paths.get(tempDir.toString(), domainParentArtifactId);
         Files.createDirectories(domainModuleDir);
         Path domainParentPom = Paths.get(domainModuleDir.toString(), "pom.xml");
         Files.writeString(domainParentPom, generateDomainParentPomXmlContent(request, domainParentArtifactId, rootArtifactId, version));
 
-        // 3.a. Create Domain Core Module
         String domainCoreArtifactId = rootArtifactId + "-domain-core";
         Path domainCoreModuleDir = Paths.get(domainModuleDir.toString(), domainCoreArtifactId);
         Files.createDirectories(domainCoreModuleDir);
@@ -103,7 +121,7 @@ public class ProjectService {
         Files.writeString(domainCorePom, generateDomainCorePomXmlContent(request, domainCoreArtifactId, domainParentArtifactId, version));
         Path domainCoreMainJava = Paths.get(domainCoreModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "core");
         Files.createDirectories(domainCoreMainJava);
-        
+
         if (!useCrossCuttingLibrary) {
             Path domainCoreEntityDir = Paths.get(domainCoreMainJava.toString(), "entity");
             Files.createDirectories(domainCoreEntityDir);
@@ -113,8 +131,6 @@ public class ProjectService {
             Files.createFile(Paths.get(domainCoreMainJava.toString(), ".gitkeep"));
         }
 
-
-        // 3.b. Create Application Service Module
         String appServiceArtifactId = rootArtifactId + "-application-service";
         Path appServiceModuleDir = Paths.get(domainModuleDir.toString(), appServiceArtifactId);
         Files.createDirectories(appServiceModuleDir);
@@ -124,14 +140,12 @@ public class ProjectService {
         Files.createDirectories(appServiceMainJava);
         Files.createFile(Paths.get(appServiceMainJava.toString(), ".gitkeep"));
 
-        // 4. Create Infrastructure Module (parent pom for persistence)
         String infraParentArtifactId = rootArtifactId + "-infrastructure";
         Path infraModuleDir = Paths.get(tempDir.toString(), infraParentArtifactId);
         Files.createDirectories(infraModuleDir);
         Path infraParentPom = Paths.get(infraModuleDir.toString(), "pom.xml");
         Files.writeString(infraParentPom, generateInfrastructureParentPomXmlContent(request, infraParentArtifactId, rootArtifactId, version));
 
-        // 4.a. Create Persistence Module
         String persistenceArtifactId = rootArtifactId + "-persistence";
         Path persistenceModuleDir = Paths.get(infraModuleDir.toString(), persistenceArtifactId);
         Files.createDirectories(persistenceModuleDir);
@@ -148,7 +162,6 @@ public class ProjectService {
             Files.createFile(Paths.get(persistenceMainJava.toString(), ".gitkeep"));
         }
 
-        // 5. Create Application (Presentation) Module
         String appLayerArtifactId = rootArtifactId + "-application";
         Path appLayerModuleDir = Paths.get(tempDir.toString(), appLayerArtifactId);
         Files.createDirectories(appLayerModuleDir);
@@ -161,7 +174,7 @@ public class ProjectService {
             Path appLayerExceptionDir = Paths.get(appLayerMainJava.toString(), "exception");
             Files.createDirectories(appLayerExceptionDir);
             Files.writeString(Paths.get(appLayerExceptionDir.toString(), "GlobalExceptionHandler.java"), generateDefaultGlobalExceptionHandlerContent(basePackageNameForClassGen));
-            
+
             Path appLayerPayloadDir = Paths.get(appLayerMainJava.toString(), "payload");
             Files.createDirectories(appLayerPayloadDir);
             Files.writeString(Paths.get(appLayerPayloadDir.toString(), "ResultObject.java"), generateDefaultResultObjectContent(basePackageNameForClassGen));
@@ -169,14 +182,11 @@ public class ProjectService {
             Files.createFile(Paths.get(appLayerMainJava.toString(), ".gitkeep"));
         }
 
-
-        // 6. Zip up the temp directory
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try (ZipOutputStream zipOut = new ZipOutputStream(baos)) {
-            zipDirectory(tempDir.toFile(), "", zipOut); // Pass "" as parentName for root files
+            zipDirectory(tempDir.toFile(), "", zipOut);
         }
 
-        // 7. Clean up
         deleteDirectoryRecursively(tempDir);
 
         return baos.toByteArray();
@@ -212,20 +222,16 @@ public class ProjectService {
         if (str == null || str.isEmpty()) {
             return str;
         }
-        // Handle hyphens: split, capitalize each part, then join
-        String[] parts = str.split("-");
-        StringBuilder capitalizedString = new StringBuilder();
-        for (String part : parts) {
-            if (part.isEmpty()) continue;
-            capitalizedString.append(part.substring(0, 1).toUpperCase()).append(part.substring(1).toLowerCase());
-        }
-        return capitalizedString.toString();
+        return Arrays.stream(str.split("-"))
+                     .filter(part -> part != null && !part.isEmpty())
+                     .map(part -> part.substring(0, 1).toUpperCase() + part.substring(1).toLowerCase())
+                     .collect(Collectors.joining());
     }
 
     private String generateRootPomXmlContent(ProjectRequest request, String effectiveVersion) {
         String artifactId = request.getArtifactId();
-        String javaVersion = (request.getJavaVersion() != null && !request.getJavaVersion().isEmpty()) ? request.getJavaVersion() : "21";
-        String springBootVersion = (request.getSpringBootVersion() != null && !request.getSpringBootVersion().isEmpty()) ? request.getSpringBootVersion() : "3.5.0";
+        String javaVersion = (request.getJavaVersion() != null && !request.getJavaVersion().isEmpty()) ? request.getJavaVersion() : DEFAULT_JAVA_VERSION;
+        String springBootVersion = (request.getSpringBootVersion() != null && !request.getSpringBootVersion().isEmpty()) ? request.getSpringBootVersion() : DEFAULT_SPRING_BOOT_VERSION;
         String lombokVersion = request.getLombokVersion();
 
         StringBuilder propertiesBuilder = new StringBuilder();
@@ -244,11 +250,9 @@ public class ProjectService {
                     "                <artifactId>lombok</artifactId>\n" +
                     String.format("                <version>%s</version>\n", lombokVersionPropertyRef) +
                     "                <scope>provided</scope>\n" +
-                    "            </dependency>"; // No trailing newline here, it will be handled by the main template
+                    "            </dependency>";
             lombokCompilerPathVersionTag = String.format("                            <version>%s</version>\n", lombokVersionPropertyRef);
         } else {
-            // If lombokVersion is not provided, Lombok is not added to root dependencyManagement.
-            // Children inherit from Spring Boot parent. Compiler plugin path also inherits.
         }
 
         StringBuilder crossCuttingDepsXmlBuilder = new StringBuilder();
@@ -260,7 +264,7 @@ public class ProjectService {
             crossCuttingLib.getDependencies() != null && !crossCuttingLib.getDependencies().isEmpty()) {
             
             String libName = crossCuttingLib.getName();
-            String libVersionProperty = libName.toLowerCase() + ".version";
+            String libVersionProperty = libName.toLowerCase().replace("-", ".") + ".version";
             propertiesBuilder.append(String.format("        <%s>%s</%s>\n", libVersionProperty, crossCuttingLib.getVersion(), libVersionProperty));
 
             crossCuttingDepsXmlBuilder.append("\n            <!-- Cross-Cutting Library: ").append(libName).append(" -->");
@@ -315,7 +319,6 @@ public class ProjectService {
 
     <dependencyManagement>
         <dependencies>
-            <!-- Project Modules -->
             <dependency>
                 <groupId>%s</groupId>
                 <artifactId>%s-container</artifactId>
@@ -380,20 +383,15 @@ public class ProjectService {
                 effectiveVersion,
                 request.getName(),
                 request.getDescription(),
-                // Modules
                 artifactId, artifactId, artifactId, artifactId,
-                // Properties
                 propertiesBuilder.toString(),
-                // Dependency Management - Project Modules
-                request.getGroupId(), artifactId, // container
-                request.getGroupId(), artifactId, // application
-                request.getGroupId(), artifactId, // domain-core
-                request.getGroupId(), artifactId, // application-service
-                request.getGroupId(), artifactId, // persistence
-                // Common Third-Party Dependencies
+                request.getGroupId(), artifactId,
+                request.getGroupId(), artifactId,
+                request.getGroupId(), artifactId,
+                request.getGroupId(), artifactId,
+                request.getGroupId(), artifactId,
                 lombokDependencyManagementEntry,
                 crossCuttingDepsXmlBuilder.toString(),
-                // Lombok version for compiler plugin
                 lombokCompilerPathVersionTag
         );
     }
@@ -448,7 +446,6 @@ public class ProjectService {
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <!-- Version is inherited from pluginManagement in root POM -->
                 <configuration>
                     <mainClass>${start-class}</mainClass>
                 </configuration>
@@ -465,109 +462,95 @@ public class ProjectService {
     </build>
 </project>
                 """,
-                request.getGroupId(), // For parent groupId
-                rootArtifactId,       // For parent artifactId
-                effectiveVersion, // For parent version
-                containerArtifactId,  // For self artifactId
-                sanitizedPackageName, // For start-class package name part
-                capitalize(rootArtifactId), // For start-class ApplicationName part
-                request.getGroupId(), rootArtifactId, // domain-core module
-                request.getGroupId(), rootArtifactId, // application-service module
-                request.getGroupId(), rootArtifactId, // application module
-                request.getGroupId(), rootArtifactId  // persistence module
-        );
-    }
-    private String generateContainerApplicationJavaContent(ProjectRequest request, String rootArtifactId, String modulePackageName) {
-        String mainClassName = capitalize(rootArtifactId) + capitalize(modulePackageName) + "Application";
-        String sanitizedPackageName = request.getPackageName().replace('-', '_');
-        // Use request.getPackageName() for the main package and ComponentScan
-        return String.format("""
-package %s.%s;
-
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.ComponentScan;
-
-@SpringBootApplication
-@ComponentScan(basePackages = "%s") // Scan all project modules based on request.getPackageName()
-public class %s {
-
-    public static void main(String[] args) {
-        SpringApplication.run(%s.class, args);
-    }
-
-}
-                """,
-                sanitizedPackageName, // e.g., com.example.demo
-                modulePackageName.replace("-", ""), // e.g., container
-                sanitizedPackageName, // scan base package: e.g., com.example.demo
-                mainClassName,
-                mainClassName
+                request.getGroupId(),
+                rootArtifactId,
+                effectiveVersion,
+                containerArtifactId,
+                sanitizedPackageName,
+                capitalize(rootArtifactId),
+                request.getGroupId(), rootArtifactId,
+                request.getGroupId(), rootArtifactId,
+                request.getGroupId(), rootArtifactId,
+                request.getGroupId(), rootArtifactId
         );
     }
 
-    private String generateApplicationYmlContent(String rootArtifactId) {
-        return String.format("""
-# Default application configuration
-# Activate a specific profile by setting the SPRING_PROFILES_ACTIVE environment variable
-# or by adding --spring.profiles.active={profile} to the command line arguments.
-# Example: java -jar your-app.jar --spring.profiles.active=dev
+    private String generateContainerApplicationJavaContent(String basePackageName, String rootArtifactId, String moduleSuffix) {
+        String appName = capitalize(rootArtifactId) + capitalize(moduleSuffix) + "Application";
+        String moduleSpecificPackage = basePackageName + "." + moduleSuffix.replace("-", "");
 
-server:
-  port: 8080
-
-spring:
-  application:
-    name: %s
-# Common datasource example (can be overridden in profile-specific files)
-#  datasource:
-#    url: jdbc:postgresql://localhost:5432/%sdb
-#    username: user
-#    password: password
-#    driver-class-name: org.postgresql.Driver
-#  jpa:
-#    hibernate:
-#      ddl-auto: update # For dev; use "validate" or "none" in prod
-#    show-sql: true
-#    properties:
-#      hibernate:
-#        format_sql: true
-""", rootArtifactId, rootArtifactId);
+        return String.format(
+                "package %s;\\n\\n" +
+                "import org.springframework.boot.SpringApplication;\\n" +
+                "import org.springframework.boot.autoconfigure.SpringBootApplication;\\n" +
+                "import org.springframework.context.annotation.ComponentScan;\\n\\n" +
+                "@SpringBootApplication\\n" +
+                "@ComponentScan(basePackages = {\\\"%s\\\"})\\n" +
+                "public class %s {\\n\\n" +
+                "    public static void main(String[] args) {\\n" +
+                "        SpringApplication.run(%s.class, args);\\n" +
+                "    }\\n\\n" +
+                "}\\n",
+                moduleSpecificPackage,
+                basePackageName,
+                appName,
+                appName
+        );
     }
 
-    private String generateProfileApplicationYmlContent(String rootArtifactId, String profile) {
-        String databaseNameSuffix = profile.equals("local") ? "db" : profile + "db";
-        String ddlAuto = "none";
-        if (profile.equals("local") || profile.equals("dev")) {
-            ddlAuto = "update";
-        } else if (profile.equals("test")) {
-            ddlAuto = "create-drop";
-        }
-
+    private String generateApplicationYmlContent(String springApplicationName, String serverPort, String bannerMode) {
+        // bannerMode argument is no longer used as it's hardcoded to off.
+        // springApplicationName and serverPort are used.
         return String.format("""
-# Configuration for %s environment
 spring:
   application:
-    name: %s-%s
-  datasource:
-    url: jdbc:postgresql://localhost:5432/%s%s
-    username: %s_user
-    password: password # Change in a real scenario
-    driver-class-name: org.postgresql.Driver
+    name: ${SPRING_APPLICATION_NAME:%s}
+  main:
+    banner-mode: off
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  # Datasource configuration is expected to be provided by an active profile (e.g., local, dev, prod)
+  # or environment variables if no specific datasource is configured in a profile.
   jpa:
     hibernate:
-      ddl-auto: %s
-    show-sql: %s
-    properties:
-      hibernate:
-        format_sql: %s
+      ddl-auto: ${JPA_HIBERNATE_DDL_AUTO:validate} # Defaults to validate; can be overridden by profiles
+server:
+  port: ${SERVER_PORT:%s}
+""", springApplicationName, serverPort);
+    }
 
-environment:
-  name: %s
-""", profile, rootArtifactId, profile, rootArtifactId, databaseNameSuffix, profile, ddlAuto, 
-     (profile.equals("local") || profile.equals("dev") || profile.equals("test") ? "true" : "false"),
-     (profile.equals("local") || profile.equals("dev") || profile.equals("test") ? "true" : "false"),
-     profile);
+    private String generateApplicationLocalYmlContent(EnvironmentalCredentialsRequest envRequest) {
+        String url = (envRequest.getLocalDatasourceUrl() != null && !envRequest.getLocalDatasourceUrl().isEmpty())
+                     ? envRequest.getLocalDatasourceUrl() : "jdbc:postgresql://localhost:5432/your_db_name_local";
+        String username = (envRequest.getLocalDatasourceUsername() != null && !envRequest.getLocalDatasourceUsername().isEmpty())
+                          ? envRequest.getLocalDatasourceUsername() : "your_username_local";
+        String password = envRequest.getLocalDatasourcePassword() != null 
+                          ? envRequest.getLocalDatasourcePassword() : "your_password_local";
+
+        return String.format("""
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL_LOCAL:%s}
+    username: ${SPRING_DATASOURCE_USERNAME_LOCAL:%s}
+    password: ${SPRING_DATASOURCE_PASSWORD_LOCAL:%s}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+""", url, username, password);
+    }
+
+    private String generateProfileApplicationYmlContent(String baseSpringApplicationName, String profile) {
+        // baseSpringApplicationName is not used here.
+        return String.format("""
+# Configuration for '%s' environment.
+# Expecting datasource credentials to be provided via environment variables or a secure configuration server.
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+""", profile);
     }
 
     private String generateDomainParentPomXmlContent(ProjectRequest request, String domainParentArtifactId, String rootArtifactId, String effectiveVersion) {
@@ -597,8 +580,8 @@ environment:
                 rootArtifactId,
                 effectiveVersion,
                 domainParentArtifactId,
-                rootArtifactId, // domain-core module name uses root artifactId as prefix
-                rootArtifactId  // application-service module name uses root artifactId as prefix
+                rootArtifactId,
+                rootArtifactId
         );
     }
 
@@ -664,14 +647,12 @@ environment:
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <!-- Scope and version managed by root POM -->
         </dependency>
 
         <!-- Jackson Annotations (often used with DTOs) -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-annotations</artifactId>
-            <!-- Version managed by Spring Boot parent -->
         </dependency>
 
         <!-- Test Dependencies -->
@@ -722,7 +703,7 @@ environment:
                 rootArtifactId,
                 effectiveVersion,
                 infraParentArtifactId,
-                rootArtifactId // persistence module name uses root artifactId as prefix
+                rootArtifactId
         );
     }
 
@@ -758,7 +739,6 @@ environment:
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <!-- Scope and version managed by root POM -->
         </dependency>
     </dependencies>
 </project>
@@ -803,7 +783,6 @@ environment:
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <!-- Scope and version managed by root POM -->
         </dependency>
     </dependencies>
 </project>
@@ -821,18 +800,15 @@ environment:
             return;
         }
         Files.walk(path)
-                .sorted((o1, o2) -> o2.compareTo(o1)) // Reverse order for deletion
+                .sorted((o1, o2) -> o2.compareTo(o1))
                 .forEach(p -> {
                     try {
                         Files.deleteIfExists(p);
                     } catch (IOException e) {
-                        // Log error or throw a custom exception
                         System.err.println("Failed to delete: " + p + " - " + e.getMessage());
                     }
                 });
     }
-
-    // --- Methods for generating default cross-cutting concern classes ---
 
     private String generateDefaultGlobalExceptionHandlerContent(String basePackageName) {
         return String.format("""
@@ -977,8 +953,6 @@ public abstract class BaseDomainEntity<ID> {
     }
 
     private String generateDefaultBaseEntityContent(String basePackageName) {
-        // Note: The original BaseEntity used jakarta.persistence.
-        // Ensure these dependencies are available in the persistence module if this is generated.
         return String.format("""
 package %s.infrastructure.persistence.entity;
 

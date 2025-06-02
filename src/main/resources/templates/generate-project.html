@@ -255,7 +255,7 @@
     </style>
 </head>
 <body>
-    <form th:action="@{/ui/generate}" th:object="${projectRequest}" method="post">
+    <form th:action="@{/ui/project-details}" th:object="${projectRequest}" method="post">
         <div class="page-wrapper">
             <div class="sidebar">
                 <img th:src="@{/images/logo.svg}" alt="DDD Generator Logo" class="logo"/>
@@ -282,6 +282,11 @@
 
             <div class="main-content">
                 <div th:if="${errorMessage}" class="global-error-message" th:text="${errorMessage}"></div>
+                
+                <!-- Display validation errors for the ProjectRequest object itself (e.g., from class-level constraints) -->
+                <div th:if="${#fields.hasGlobalErrors()}" class="global-error-message">
+                    <p th:each="err : ${#fields.globalErrors()}" th:text="${err}"></p>
+                </div>
 
                 <div class="form-columns">
                     <div class="form-column-left">
@@ -321,9 +326,12 @@
                     </div>
 
                     <div class="form-column-right">
-                        <h2>Cross-Cutting Library (Optional)</h2> <!-- This h2 was missing -->
+                        <h2>Cross-Cutting Library (Optional)</h2>
+                        <!-- Display specific errors for crossCuttingLibrary if available -->
+                        <div th:if="${#fields.hasErrors('crossCuttingLibrary')}" class="error-message">
+                            <p th:each="err : ${#fields.errors('crossCuttingLibrary')}" th:text="${err}"></p>
+                        </div>
                         <div class="optional-section">
-                            <!-- <h3>Cross-Cutting Library (Optional)</h3> Removing redundant h3 -->
                             <p class="description">If you have a shared library for cross-cutting concerns (e.g., base entities, common utilities), provide its Maven coordinates and the modules it provides. Ensure this library is accessible in your Maven repository.</p>
                             <p class="description"><strong>Note:</strong> If you do not provide a cross-cutting library, the generator will create default implementations for: <code>AggregateRoot.java</code>, <code>BaseDomainEntity.java</code> (domain-core), <code>BaseEntity.java</code> (persistence), <code>GlobalExceptionHandler.java</code>, and <code>ResultObject.java</code> (application).</p>
                             <div class="form-group">
@@ -348,7 +356,7 @@
                     </div>
                 </div>
                 <div class="submit-button-container">
-                    <button type="submit" class="submit-button">Generate Project</button>
+                    <button type="submit" class="submit-button">Next</button>
                 </div>
             </div>
         </div>

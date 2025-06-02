@@ -1,8 +1,11 @@
 package com.muratagin.dddgenerator.dto;
 
+import com.muratagin.dddgenerator.validator.ValidCrossCuttingLibrary;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 // Assuming CrossCuttingLibraryRequest doesn't need validation for this step, or is handled separately.
 
+@ValidCrossCuttingLibrary // Apply the custom validation at the class level
 public class ProjectRequest {
 
     @NotBlank(message = "Group is required")
@@ -26,6 +29,8 @@ public class ProjectRequest {
     private String javaVersion; // Optional, defaults in service
     private String springBootVersion; // Optional, defaults in service
     private String lombokVersion; // Optional, defaults in service
+
+    @Valid // Add @Valid here to trigger validation of fields within CrossCuttingLibraryRequest if it's not null
     private CrossCuttingLibraryRequest crossCuttingLibrary; // Optional
 
     // Constructors
@@ -74,6 +79,9 @@ public class ProjectRequest {
     }
 
     public String getVersion() {
+        if (this.version == null || this.version.trim().isEmpty()) {
+            return "0.0.1-SNAPSHOT";
+        }
         return version;
     }
 

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>DDD Generator - Download Project</title>
+    <style>
+        :root {
+            --bg-color: #2d333b; 
+            --text-color: #cdd9e5; 
+            --input-bg-color: #22272e;
+            --input-border-color: #444c56;
+            --container-bg-color: #22272e; 
+            --header-color: #58a6ff; 
+            --button-bg-color: #3fb950; 
+            --button-hover-bg-color: #48cb5c;
+            --button-secondary-bg-color: #444c56;
+            --button-secondary-hover-bg-color: #586069;
+            --description-text-color: #8b949e;
+            --section-border-color: #444c56;
+            --sidebar-bg-color: #22272e;
+            --main-content-bg-color: #2d333b;
+        }
+
+        html.light-mode {
+            --bg-color: #f4f7f6;
+            --text-color: #333;
+            --input-bg-color: #fff;
+            --input-border-color: #ccc;
+            --container-bg-color: #ffffff;
+            --header-color: #007bff;
+            --button-bg-color: #28a745;
+            --button-hover-bg-color: #218838;
+            --button-secondary-bg-color: #6c757d;
+            --button-secondary-hover-bg-color: #5a6268;
+            --description-text-color: #777;
+            --section-border-color: #ddd;
+            --sidebar-bg-color: #ffffff;
+            --main-content-bg-color: #f4f7f6;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: calc(100vh - 40px);
+        }
+
+        .page-container {
+            width: 100%;
+            max-width: 800px;
+            background-color: var(--container-bg-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            display: flex; /* Changed to flex for sidebar layout */
+        }
+
+        .sidebar {
+            width: 280px;
+            padding: 25px;
+            background-color: var(--sidebar-bg-color);
+            border-right: 1px solid var(--section-border-color);
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .sidebar img.logo {
+            width: 70px;
+            height: auto;
+            margin-bottom: 10px;
+            align-self: center;
+        }
+
+        .sidebar h1 {
+            font-size: 22px;
+            color: var(--header-color);
+            margin-bottom: 20px;
+            text-align: center;
+            width: 100%;
+        }
+        
+        #theme-toggle {
+            background: var(--input-bg-color);
+            color: var(--text-color);
+            border: 1px solid var(--input-border-color);
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-bottom: 20px;
+            width: 100%;
+        }
+        #theme-toggle:hover {
+            border-color: var(--input-focus-border-color);
+        }
+
+        .project-summary-sidebar {
+            margin-top: 20px;
+            font-size: 0.9em;
+            width: 100%;
+        }
+        .project-summary-sidebar h4 {
+            color: var(--header-color);
+            margin-bottom: 8px;
+            border-bottom: 1px solid var(--section-border-color);
+            padding-bottom: 5px;
+        }
+        .project-summary-sidebar p {
+            margin: 4px 0;
+            font-size: 0.95em;
+        }
+
+        .main-content-download {
+            flex: 1;
+            padding: 35px 45px;
+            text-align: center; 
+            background-color: var(--main-content-bg-color);
+        }
+
+        .main-content-download h2 {
+            font-size: 24px;
+            color: var(--header-color);
+            margin-top: 0;
+            margin-bottom: 15px;
+        }
+
+        .main-content-download .message {
+            font-size: 1.1em;
+            margin-bottom: 30px;
+        }
+
+        .button-container-download {
+            display: flex;
+            flex-direction: column; /* Stack buttons vertically */
+            align-items: center; /* Center buttons horizontally */
+            gap: 15px; /* Space between buttons */
+            margin-top: 20px;
+        }
+        
+        .button {
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            text-decoration: none; /* For <a> styled as button */
+            display: inline-block; /* For <a> styled as button */
+            min-width: 200px; /* Ensure buttons have a nice width */
+        }
+        .download-button {
+             background-color: var(--button-bg-color);
+        }
+        .download-button:hover {
+            background-color: var(--button-hover-bg-color);
+        }
+        .home-button {
+            background-color: var(--button-secondary-bg-color);
+        }
+        .home-button:hover {
+            background-color: var(--button-secondary-hover-bg-color);
+        }
+
+    </style>
+</head>
+<body>
+    <div class="page-container">
+        <div class="sidebar">
+            <img th:src="@{/images/logo.svg}" alt="DDD Generator Logo" class="logo"/>
+            <h1>DDD Generator</h1>
+            <button type="button" id="theme-toggle">Toggle Light/Dark Mode</button>
+            
+            <div th:if="${projectRequestSummary != null}" class="project-summary-sidebar">
+                <h4>Project Summary:</h4>
+                <p><strong>Name:</strong> <span th:text="${projectRequestSummary.name}"></span></p>
+                <p><strong>Group:</strong> <span th:text="${projectRequestSummary.groupId}"></span></p>
+                <p><strong>Artifact:</strong> <span th:text="${projectRequestSummary.artifactId}"></span></p>
+                <p><strong>Version:</strong> <span th:text="${projectRequestSummary.version}"></span></p>
+            </div>
+        </div>
+
+        <div class="main-content-download">
+            <h2>Project Ready!</h2>
+            <p class="message">Your project <strong th:text="${fileName}">project.zip</strong> has been generated successfully.</p>
+            
+            <div class="button-container-download">
+                <a id="downloadProjectButton" th:href="@{/ui/perform-download}" class="button download-button">Download Project</a>
+                <a th:href="@{/ui/generate-project}" class="button home-button">Return Home</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Theme toggle logic
+            const themeToggle = document.getElementById('theme-toggle');
+            const htmlElement = document.documentElement;
+
+            function applyTheme(theme) {
+                if (theme === 'light') {
+                    htmlElement.classList.add('light-mode');
+                    if (themeToggle) themeToggle.textContent = 'Switch to Dark Mode';
+                } else {
+                    htmlElement.classList.remove('light-mode');
+                    if (themeToggle) themeToggle.textContent = 'Switch to Light Mode';
+                }
+            }
+
+            const savedTheme = localStorage.getItem('theme') || 'dark'; // Default to dark if nothing saved
+            applyTheme(savedTheme);
+
+            if (themeToggle) {
+                themeToggle.addEventListener('click', () => {
+                    let currentTheme = htmlElement.classList.contains('light-mode') ? 'light' : 'dark';
+                    let newTheme = currentTheme === 'light' ? 'dark' : 'light';
+                    applyTheme(newTheme);
+                    localStorage.setItem('theme', newTheme);
+                });
+            }
+
+            // Download button logic
+            const downloadBtn = document.getElementById('downloadProjectButton');
+            let downloadHasBeenClicked = false;
+
+            if (downloadBtn) {
+                downloadBtn.addEventListener('click', function(event) {
+                    if (downloadHasBeenClicked) {
+                        event.preventDefault(); // Prevent re-triggering the download
+                        return;
+                    }
+                    // This is the first click
+                    downloadHasBeenClicked = true;
+                    this.textContent = 'Download Completed';
+                    this.style.opacity = '0.6'; // Visually indicate it's processing/disabled
+                    // The default action of the link (navigating to href) will proceed for this first click.
+                    // Subsequent clicks will be caught by the `if (downloadHasBeenClicked)` block.
+                });
+            }
+        });
+    </script>
+</body>
+</html> 

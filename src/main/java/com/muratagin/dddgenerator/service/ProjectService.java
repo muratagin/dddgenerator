@@ -82,7 +82,7 @@ public class ProjectService {
         Path containerMainJavaDir = Paths.get(containerModuleDir.toString(), "src", "main", "java", basePackagePath, "container");
         Files.createDirectories(containerMainJavaDir);
         Path containerAppFile = Paths.get(containerMainJavaDir.toString(), capitalize(rootArtifactId) + "ContainerApplication.java");
-        Files.writeString(containerAppFile, generateContainerApplicationJavaContent(basePackageNameForClassGen, rootArtifactId, "container"));
+        Files.writeString(containerAppFile, generateContainerApplicationJavaContent(basePackageNameForClassGen, projectRequest, rootArtifactId, "container", useCrossCuttingLibrary));
         Path containerResources = Paths.get(containerModuleDir.toString(), "src", "main", "resources");
         Files.createDirectories(containerResources);
         Path applicationYml = Paths.get(containerResources.toString(), "application.yml");
@@ -124,13 +124,23 @@ public class ProjectService {
         Path domainCoreMainJava = Paths.get(domainCoreModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "core");
         Files.createDirectories(domainCoreMainJava);
 
+        String domainExceptionClassName = useCrossCuttingLibrary ? capitalize(rootArtifactId) + "DomainException" : "DomainException";
+
+        Path domainCoreExceptionDir = Paths.get(domainCoreMainJava.toString(), "exception");
+        Files.createDirectories(domainCoreExceptionDir);
+        Files.writeString(Paths.get(domainCoreExceptionDir.toString(), domainExceptionClassName + ".java"), generateDomainExceptionContent(basePackageNameForClassGen, domainExceptionClassName));
+        Files.writeString(Paths.get(domainCoreExceptionDir.toString(), "DomainEntityNotFoundException.java"), generateDomainEntityNotFoundExceptionContent(basePackageNameForClassGen));
+        Files.writeString(Paths.get(domainCoreExceptionDir.toString(), "RepositoryOutputPortException.java"), generateRepositoryOutputPortExceptionContent(basePackageNameForClassGen));
+
         if (!useCrossCuttingLibrary) {
             Path domainCoreEntityDir = Paths.get(domainCoreMainJava.toString(), "entity");
             Files.createDirectories(domainCoreEntityDir);
             Files.writeString(Paths.get(domainCoreEntityDir.toString(), "AggregateRoot.java"), generateDefaultAggregateRootContent(basePackageNameForClassGen));
             Files.writeString(Paths.get(domainCoreEntityDir.toString(), "BaseDomainEntity.java"), generateDefaultBaseDomainEntityContent(basePackageNameForClassGen));
-        } else {
-            Files.createFile(Paths.get(domainCoreMainJava.toString(), ".gitkeep"));
+
+            Path domainCoreValueObjectDir = Paths.get(domainCoreMainJava.toString(), "valueobject");
+            Files.createDirectories(domainCoreValueObjectDir);
+            Files.writeString(Paths.get(domainCoreValueObjectDir.toString(), "BaseId.java"), generateDefaultBaseIdContent(basePackageNameForClassGen));
         }
 
         String appServiceArtifactId = rootArtifactId + "-application-service";
@@ -173,9 +183,10 @@ public class ProjectService {
         Files.createDirectories(appLayerMainJava);
 
         if (!useCrossCuttingLibrary) {
+            String globalExceptionHandlerClassName = "GlobalExceptionHandler";
             Path appLayerExceptionDir = Paths.get(appLayerMainJava.toString(), "exception");
             Files.createDirectories(appLayerExceptionDir);
-            Files.writeString(Paths.get(appLayerExceptionDir.toString(), "GlobalExceptionHandler.java"), generateDefaultGlobalExceptionHandlerContent(basePackageNameForClassGen));
+            Files.writeString(Paths.get(appLayerExceptionDir.toString(), globalExceptionHandlerClassName + ".java"), generateDefaultGlobalExceptionHandlerContent(basePackageNameForClassGen, globalExceptionHandlerClassName, domainExceptionClassName));
 
             Path appLayerPayloadDir = Paths.get(appLayerMainJava.toString(), "payload");
             Files.createDirectories(appLayerPayloadDir);
@@ -266,7 +277,7 @@ public class ProjectService {
             crossCuttingLib.getDependencies() != null && !crossCuttingLib.getDependencies().isEmpty()) {
             
             String libName = crossCuttingLib.getName();
-            String libVersionProperty = libName.toLowerCase().replace("-", ".") + ".version";
+            String libVersionProperty = libName.toLowerCase().replace("-", "") + ".version";
             propertiesBuilder.append(String.format("        <%s>%s</%s>\n", libVersionProperty, crossCuttingLib.getVersion(), libVersionProperty));
 
             crossCuttingDepsXmlBuilder.append("\n            <!-- Cross-Cutting Library: ").append(libName).append(" -->");
@@ -477,19 +488,25 @@ public class ProjectService {
         );
     }
 
-    private String generateContainerApplicationJavaContent(String basePackageName, String rootArtifactId, String moduleSuffix) {
+    private String generateContainerApplicationJavaContent(String basePackageName, ProjectRequest projectRequest, String rootArtifactId, String moduleSuffix, boolean useCrossCuttingLibrary) {
         String appName = capitalize(rootArtifactId) + capitalize(moduleSuffix) + "Application";
         String moduleSpecificPackage = basePackageName + "." + moduleSuffix.replace("-", "");
 
-        return String.format("""
+        if (useCrossCuttingLibrary) {
+            CrossCuttingLibraryRequest crossCuttingLib = projectRequest.getCrossCuttingLibrary();
+            String crossCuttingBasePackage = crossCuttingLib.getGroupId() + "." + crossCuttingLib.getName().replace("-", "");
+
+            return String.format("""
 package %s;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.ComponentScan;
+import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
-@SpringBootApplication
-@ComponentScan(basePackages = {"%s"})
+@EnableJpaRepositories(basePackages = {"%s.infrastructure.persistence"})
+@EntityScan(basePackages = {"%s.infrastructure.persistence"})
+@SpringBootApplication(scanBasePackages = {"%s", "%s"})
 public class %s {
 
     public static void main(String[] args) {
@@ -497,7 +514,28 @@ public class %s {
     }
 
 }
-""", moduleSpecificPackage, basePackageName, appName, appName).stripIndent();
+""", moduleSpecificPackage, basePackageName, basePackageName, basePackageName, crossCuttingBasePackage, appName, appName).stripIndent();
+        } else {
+            return String.format("""
+package %s;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+
+@EnableJpaRepositories(basePackages = {"%s.infrastructure.persistence"})
+@EntityScan(basePackages = {"%s.infrastructure.persistence"})
+@SpringBootApplication(scanBasePackages = {"%s"})
+public class %s {
+
+    public static void main(String[] args) {
+        SpringApplication.run(%s.class, args);
+    }
+
+}
+""", moduleSpecificPackage, basePackageName, basePackageName, basePackageName, appName, appName).stripIndent();
+        }
     }
 
     private String generateApplicationYmlContent(String springApplicationName, String serverPort, String bannerMode) {
@@ -812,31 +850,30 @@ spring:
                 });
     }
 
-    private String generateDefaultGlobalExceptionHandlerContent(String basePackageName) {
+    private String generateDefaultGlobalExceptionHandlerContent(String basePackageName, String globalExceptionHandlerClassName, String domainExceptionClassName) {
         return String.format("""
 package %s.application.exception;
 
-import jakarta.validation.ConstraintViolationException;
-import jakarta.validation.ValidationException;
+import %s.domain.core.exception.%s;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.net.URI;
 
 @Slf4j
 @ControllerAdvice
-public class GlobalExceptionHandler {
+public class %s {
 
     @ResponseBody
-    @ExceptionHandler(value = {ValidationException.class, ConstraintViolationException.class})
+    @ExceptionHandler(value = {%s.class})
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ProblemDetail handle(ValidationException exception) {
+    public ProblemDetail handleException(%s exception) {
         log.error(exception.getMessage(), exception);
         ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, exception.getMessage());
         problemDetail.setType(URI.create("https://www.rfc-editor.org/rfc/rfc9110#status.400"));
@@ -844,16 +881,16 @@ public class GlobalExceptionHandler {
     }
 
     @ResponseBody
-    @ExceptionHandler(value = {NoResourceFoundException.class})
+    @ExceptionHandler(value = {DataIntegrityViolationException.class})
     @ResponseStatus(HttpStatus.NOT_FOUND)
-    public ProblemDetail handleException(NoResourceFoundException exception) {
+    public ProblemDetail handleException(DataIntegrityViolationException exception) {
         log.error(exception.getMessage(), exception);
         ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, exception.getMessage());
         problemDetail.setType(URI.create("https://www.rfc-editor.org/rfc/rfc9110#status.404"));
         return problemDetail;
     }
 }
-""", basePackageName);
+""", basePackageName, basePackageName, domainExceptionClassName, globalExceptionHandlerClassName, domainExceptionClassName, domainExceptionClassName);
     }
 
     private String generateDefaultResultObjectContent(String basePackageName) {
@@ -981,6 +1018,88 @@ public class BaseEntity {
     public BaseEntity(UUID id, Boolean isDeleted) {
         this.id = id;
         this.isDeleted = isDeleted;
+    }
+}
+""", basePackageName);
+    }
+
+    private String generateDefaultBaseIdContent(String basePackageName) {
+        return String.format("""
+package %s.domain.core.valueobject;
+
+import java.util.Objects;
+
+public abstract class BaseId<T> {
+
+    private final T value;
+
+    protected BaseId(T value) {
+        this.value = value;
+    }
+
+    public T getValue() {
+        return value;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        BaseId<?> baseId = (BaseId<?>) o;
+        return Objects.equals(value, baseId.value);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(value);
+    }
+
+    @Override
+    public String toString() {
+        return value.toString();
+    }
+}
+""", basePackageName);
+    }
+
+    private String generateDomainExceptionContent(String basePackageName, String className) {
+        return String.format("""
+package %s.domain.core.exception;
+
+public class %s extends RuntimeException {
+
+    public %s(String message) {
+        super(message);
+    }
+
+    public %s(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+""", basePackageName, className, className, className);
+    }
+
+    private String generateDomainEntityNotFoundExceptionContent(String basePackageName) {
+        return String.format("""
+package %s.domain.core.exception;
+
+public class DomainEntityNotFoundException extends RuntimeException {
+
+    public DomainEntityNotFoundException() {
+        super();
+    }
+}
+""", basePackageName);
+    }
+
+    private String generateRepositoryOutputPortExceptionContent(String basePackageName) {
+        return String.format("""
+package %s.domain.core.exception;
+
+public class RepositoryOutputPortException extends RuntimeException {
+
+    public RepositoryOutputPortException() {
+        super();
     }
 }
 """, basePackageName);

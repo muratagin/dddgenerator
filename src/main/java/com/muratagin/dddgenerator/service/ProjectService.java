@@ -906,7 +906,7 @@ public class %s {
         return problemDetail;
     }
 }
-""", basePackageName, basePackageName, domainExceptionClassName, globalExceptionHandlerClassName, domainExceptionClassName, domainExceptionClassName);
+""", basePackageName, basePackageName, domainExceptionClassName, globalExceptionHandlerClassName, domainExceptionClassName, domainExceptionClassName, domainExceptionClassName, domainExceptionClassName);
     }
 
     private String generateDefaultResultObjectContent(String basePackageName) {
@@ -1129,9 +1129,29 @@ public class RepositoryOutputPortException extends RuntimeException {
 
         try (Connection conn = DriverManager.getConnection(url, username, password)) {
             List<String> tables = getTables(conn, schema);
-            Map<String, Set<String>> foreignKeys = getForeignKeys(conn, schema);
+            Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, schema);
+
+            Map<String, Set<String>> foreignKeys = new HashMap<>();
+            for (Map.Entry<String, Map<String, ForeignKeyInfo>> entry : detailedForeignKeys.entrySet()) {
+                foreignKeys.put(entry.getKey(), entry.getValue().values().stream().map(ForeignKeyInfo::getPkTableName).collect(Collectors.toSet()));
+            }
+
             Set<String> aggregateRoots = determineAggregateRoots(tables, foreignKeys);
             Map<String, String> tableEntityTypes = envRequest.getTableEntityTypes();
+            Map<String, String> columnToEnumMap = new HashMap<>();
+
+            for (String table : tables) {
+                List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
+                for (Map<String, String> column : columns) {
+                    String comment = column.get("comment");
+                    if (comment != null && !comment.isBlank()) {
+                        String enumFqn = generateEnumIfApplicable(comment, column.get("name"), basePackageName, domainCoreMainJava);
+                        if (enumFqn != null) {
+                            columnToEnumMap.put(table + "." + column.get("name"), enumFqn);
+                        }
+                    }
+                }
+            }
 
             for (String table : tables) {
                 String classNamePrefix = toPascalCase(table);
@@ -1142,24 +1162,115 @@ public class RepositoryOutputPortException extends RuntimeException {
                     extendsClass = aggregateRoots.contains(table) ? "AggregateRoot" : "BaseDomainEntity";
                 }
 
-                // Generate Id class
                 Path valueObjectDir = Paths.get(domainCoreMainJava.toString(), "valueobject");
                 Files.createDirectories(valueObjectDir);
                 String idClassName = classNamePrefix + "Id";
                 String idClassContent = generateIdClassContent(basePackageName, idClassName);
                 Files.write(Paths.get(valueObjectDir.toString(), idClassName + ".java"), idClassContent.getBytes());
 
-                // Generate DomainEntity class
                 List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
                 Path entityDir = Paths.get(domainCoreMainJava.toString(), "entity");
                 Files.createDirectories(entityDir);
                 String domainEntityClassName = classNamePrefix + "DomainEntity";
-                String domainEntityClassContent = generateDomainEntityClassContent(basePackageName, domainEntityClassName, idClassName, columns, extendsClass, envRequest);
+                String domainEntityClassContent = generateDomainEntityClassContent(basePackageName, domainEntityClassName, idClassName, columns, extendsClass, columnToEnumMap, table, detailedForeignKeys, aggregateRoots);
                 Files.write(Paths.get(entityDir.toString(), domainEntityClassName + ".java"), domainEntityClassContent.getBytes());
             }
         } catch (SQLException | IOException e) {
             e.printStackTrace();
         }
+    }
+
+    private String generateEnumIfApplicable(String comment, String columnName, String basePackageName, Path domainCoreMainJava) throws IOException {
+        if (comment == null || !comment.startsWith("Enum:")) {
+            return null;
+        }
+
+        String spec = comment.substring("Enum:".length());
+        String enumClassName;
+        String valuesPart;
+
+        int braceStart = spec.indexOf('{');
+        if (braceStart == -1 || !spec.endsWith("}")) {
+            return null;
+        }
+
+        String classNamePart = spec.substring(0, braceStart).trim();
+        enumClassName = !classNamePart.isEmpty() ? classNamePart : toPascalCase(columnName);
+
+        valuesPart = spec.substring(braceStart + 1, spec.length() - 1);
+        if (valuesPart.trim().isEmpty()) {
+            return null;
+        }
+
+        StringBuilder enumValues = new StringBuilder();
+        int nextOrdinalToAssign = 1;
+        boolean first = true;
+
+        for (String def : valuesPart.split(";")) {
+            def = def.trim();
+            if (def.isEmpty()) continue;
+
+            String enumConstantName;
+            int ordinal;
+
+            if (def.contains("-")) {
+                String[] parts = def.split("-", 2);
+                try {
+                    ordinal = Integer.parseInt(parts[0].trim());
+                    enumConstantName = parts[1].trim().replaceAll("[^a-zA-Z0-9_]", "_").toUpperCase(Locale.ENGLISH);
+                    nextOrdinalToAssign = ordinal + 1;
+                } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
+                    continue; // Skip invalid entries
+                }
+            } else {
+                ordinal = nextOrdinalToAssign;
+                enumConstantName = def.trim().replaceAll("[^a-zA-Z0-9_]", "_").toUpperCase(Locale.ENGLISH);
+                nextOrdinalToAssign++;
+            }
+
+            if (!first) {
+                enumValues.append(",\n");
+            }
+            enumValues.append(String.format("    %s(%d)", enumConstantName, ordinal));
+            first = false;
+        }
+
+        if (enumValues.length() == 0) {
+            return null;
+        }
+
+        String enumContent = String.format("""
+package %s.domain.core.valueobject;
+
+import java.util.stream.Stream;
+
+public enum %s {
+%s;
+
+    private final int value;
+
+    %s(int value) {
+        this.value = value;
+    }
+
+    public int getValue() {
+        return value;
+    }
+
+    public static %s fromValue(int value) {
+        return Stream.of(%s.values())
+                .filter(targetEnum -> targetEnum.value == value)
+                .findFirst()
+                .orElse(null);
+    }
+}
+""", basePackageName, enumClassName, enumValues.toString(), enumClassName, enumClassName, enumClassName);
+
+        Path valueObjectDir = Paths.get(domainCoreMainJava.toString(), "valueobject");
+        Files.createDirectories(valueObjectDir);
+        Files.write(Paths.get(valueObjectDir.toString(), enumClassName + ".java"), enumContent.getBytes());
+
+        return basePackageName + ".domain.core.valueobject." + enumClassName;
     }
 
     private String generateIdClassContent(String basePackageName, String idClassName) {
@@ -1177,12 +1288,14 @@ public class %s extends BaseId<UUID> {
 """, basePackageName, idClassName, idClassName);
     }
 
-    private String generateDomainEntityClassContent(String basePackageName, String domainEntityClassName, String idClassName, List<Map<String, String>> columns, String extendsClass, EnvironmentalCredentialsRequest envRequest) {
+    private String generateDomainEntityClassContent(String basePackageName, String domainEntityClassName, String idClassName, List<Map<String, String>> columns, String extendsClass, Map<String, String> columnToEnumMap, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots) {
         StringBuilder fields = new StringBuilder();
         StringBuilder constructorParams = new StringBuilder();
         StringBuilder constructorBody = new StringBuilder();
         StringBuilder getters = new StringBuilder();
         Set<String> imports = new TreeSet<>();
+
+        imports.add(String.format("%s.domain.core.valueobject.%s", basePackageName, idClassName));
 
         constructorParams.append(String.format("%s id, ", idClassName));
         if (extendsClass.equals("AggregateRoot")) {
@@ -1191,61 +1304,60 @@ public class %s extends BaseId<UUID> {
             constructorBody.append(String.format("        this.setId(id);%n"));
         }
 
-        try (Connection conn = DriverManager.getConnection(
-                envRequest.getLocalDatasourceUrl(),
-                envRequest.getLocalDatasourceUsername(),
-                envRequest.getLocalDatasourcePassword())) {
-            
-            Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, envRequest.getSelectedSchema());
-            Set<String> aggregateRoots = determineAggregateRoots(getTables(conn, envRequest.getSelectedSchema()), getForeignKeys(conn, envRequest.getSelectedSchema()));
-            
-            String currentTable = domainEntityClassName.replace("DomainEntity", "").toLowerCase();
-            Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(currentTable, new HashMap<>());
+        Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(currentTable, new HashMap<>());
+        String classNamePrefix = domainEntityClassName.replace("DomainEntity", "");
+        String fieldPrefix = classNamePrefix.substring(0, 1).toLowerCase(Locale.ENGLISH) + classNamePrefix.substring(1);
 
-            for (Map<String, String> column : columns) {
-                String columnName = column.get("name");
-                if (!columnName.equals("id")) {
-                    String fieldName = toCamelCase(columnName);
-                    String fqnFieldType;
-                    
-                    // Check if this column is a foreign key to an aggregate root
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("name");
+            if (!columnName.equals("id")) {
+                String camelCaseName = toCamelCase(columnName);
+                String fieldName;
+                if (JAVA_KEYWORDS.contains(camelCaseName)) {
+                    fieldName = fieldPrefix + toPascalCase(columnName);
+                } else {
+                    fieldName = camelCaseName;
+                }
+
+                String fqnFieldType;
+                String columnIdentifier = currentTable + "." + columnName;
+
+                if (columnToEnumMap.containsKey(columnIdentifier)) {
+                    fqnFieldType = columnToEnumMap.get(columnIdentifier);
+                } else {
                     ForeignKeyInfo fkInfo = tableForeignKeys.get(columnName);
                     if (fkInfo != null && aggregateRoots.contains(fkInfo.getPkTableName())) {
-                        // Use value object type for aggregate root references
                         String referencedEntity = toPascalCase(fkInfo.getPkTableName());
-                        fqnFieldType = referencedEntity + "Id";
-                        imports.add(basePackageName + ".domain.core.valueobject." + fqnFieldType);
+                        fqnFieldType = basePackageName + ".domain.core.valueobject." + referencedEntity + "Id";
                     } else {
                         fqnFieldType = toJavaType(column.get("type"));
                     }
-
-                    String simpleFieldType;
-                    if (fqnFieldType.contains(".")) {
-                        imports.add(fqnFieldType);
-                        simpleFieldType = fqnFieldType.substring(fqnFieldType.lastIndexOf('.') + 1);
-                    } else {
-                        simpleFieldType = fqnFieldType;
-                    }
-
-                    fields.append(String.format("    private final %s %s;%n", simpleFieldType, fieldName));
-                    constructorParams.append(String.format("%s %s, ", simpleFieldType, fieldName));
-                    constructorBody.append(String.format("        this.%s = %s;%n", fieldName, fieldName));
-
-                    String getterMethodName;
-                    if (simpleFieldType.equals("Boolean")) {
-                        if (fieldName.startsWith("is") && fieldName.length() > 2 && Character.isUpperCase(fieldName.charAt(2))) {
-                            getterMethodName = fieldName;
-                        } else {
-                            getterMethodName = "is" + toPascalCase(columnName);
-                        }
-                    } else {
-                        getterMethodName = "get" + toPascalCase(columnName);
-                    }
-                    getters.append(String.format("    public %s %s() {%n        return %s;%n    }%n%n", simpleFieldType, getterMethodName, fieldName));
                 }
+
+                String simpleFieldType;
+                if (fqnFieldType.contains(".")) {
+                    imports.add(fqnFieldType);
+                    simpleFieldType = fqnFieldType.substring(fqnFieldType.lastIndexOf('.') + 1);
+                } else {
+                    simpleFieldType = fqnFieldType;
+                }
+
+                fields.append(String.format("    private final %s %s;%n", simpleFieldType, fieldName));
+                constructorParams.append(String.format("%s %s, ", simpleFieldType, fieldName));
+                constructorBody.append(String.format("        this.%s = %s;%n", fieldName, fieldName));
+
+                String getterMethodName;
+                if (simpleFieldType.equals("Boolean")) {
+                    if (fieldName.startsWith("is") && fieldName.length() > 2 && Character.isUpperCase(fieldName.charAt(2))) {
+                        getterMethodName = fieldName;
+                    } else {
+                        getterMethodName = "is" + toPascalCase(columnName);
+                    }
+                } else {
+                    getterMethodName = "get" + toPascalCase(columnName);
+                }
+                getters.append(String.format("    public %s %s() {%n        return %s;%n    }%n%n", simpleFieldType, getterMethodName, fieldName));
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
         }
 
         if (constructorParams.length() > 0) {
@@ -1260,7 +1372,6 @@ public class %s extends BaseId<UUID> {
         return String.format("""
 package %s.domain.core.entity;
 
-import %s.domain.core.valueobject.%s;
 %s
 public class %s extends %s<%s> {
 
@@ -1269,7 +1380,7 @@ public class %s extends %s<%s> {
 %s    }
 
 %s}
-""", basePackageName, basePackageName, idClassName, importStatements.toString(), domainEntityClassName, extendsClass, idClassName, fields.toString(), domainEntityClassName, constructorParams.toString(), constructorBody.toString(), getters.toString());
+""", basePackageName, importStatements.toString(), domainEntityClassName, extendsClass, idClassName, fields.toString(), domainEntityClassName, constructorParams.toString(), constructorBody.toString(), getters.toString());
     }
 
     private List<String> getTables(Connection conn, String schema) throws SQLException {
@@ -1373,13 +1484,23 @@ public class %s extends %s<%s> {
 
     private List<Map<String, String>> getColumnsForTable(Connection conn, String schema, String table) throws SQLException {
         List<Map<String, String>> columns = new ArrayList<>();
-        String query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = ? AND table_name = ?";
+        String query = "SELECT c.column_name, c.data_type, pgd.description " +
+                "FROM information_schema.columns AS c " +
+                "LEFT JOIN pg_catalog.pg_class AS pgc ON pgc.relname = c.table_name AND pgc.relkind = 'r' " +
+                "LEFT JOIN pg_catalog.pg_namespace AS pgns ON pgns.oid = pgc.relnamespace AND pgns.nspname = c.table_schema " +
+                "LEFT JOIN pg_catalog.pg_description AS pgd ON pgd.objoid = pgc.oid AND pgd.objsubid = c.ordinal_position " +
+                "WHERE c.table_schema = ? AND c.table_name = ? " +
+                "ORDER BY c.ordinal_position";
         try (PreparedStatement pstmt = conn.prepareStatement(query)) {
             pstmt.setString(1, schema);
             pstmt.setString(2, table);
             try (ResultSet rs = pstmt.executeQuery()) {
                 while (rs.next()) {
-                    columns.add(Map.of("name", rs.getString("column_name"), "type", rs.getString("data_type")));
+                    Map<String, String> columnData = new HashMap<>();
+                    columnData.put("name", rs.getString("column_name"));
+                    columnData.put("type", rs.getString("data_type"));
+                    columnData.put("comment", rs.getString("description"));
+                    columns.add(columnData);
                 }
             }
         }
@@ -1405,14 +1526,29 @@ public class %s extends %s<%s> {
             case "character varying":
             case "varchar":
             case "text":
+            case "bpchar":
+            case "character":
                 return "String";
+            case "jsonb":
+                return "String"; // Representing jsonb as String is a safe default
             case "timestamp without time zone":
             case "timestamp":
                 return "java.time.LocalDateTime";
             case "timestamp with time zone":
                 return "java.time.ZonedDateTime";
+            case "date":
+                return "java.time.LocalDate";
             case "numeric":
                 return "java.math.BigDecimal";
+            case "int2":
+            case "smallint":
+                return "Short";
+            case "int4":
+            case "integer":
+                return "Integer";
+            case "int8":
+            case "bigint":
+                return "Long";
             case "boolean":
             case "bool":
                 return "Boolean";
@@ -1420,4 +1556,13 @@ public class %s extends %s<%s> {
                 return "Object";
         }
     }
+
+    private static final Set<String> JAVA_KEYWORDS = new HashSet<>(Arrays.asList(
+            "abstract", "continue", "for", "new", "switch", "assert", "default", "goto", "package", "synchronized",
+            "boolean", "do", "if", "private", "this", "break", "double", "implements", "protected", "throw",
+            "byte", "else", "import", "public", "throws", "case", "enum", "instanceof", "return", "transient",
+            "catch", "extends", "int", "short", "try", "char", "final", "interface", "static", "void",
+            "class", "finally", "long", "strictfp", "volatile", "const", "float", "native", "super", "while",
+            "true", "false", "null"
+    ));
 }

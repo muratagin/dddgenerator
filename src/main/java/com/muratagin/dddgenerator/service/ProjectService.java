@@ -12,13 +12,25 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-import java.util.List;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 @Service
 public class ProjectService {
@@ -132,6 +144,10 @@ public class ProjectService {
         Files.writeString(Paths.get(domainCoreExceptionDir.toString(), "DomainEntityNotFoundException.java"), generateDomainEntityNotFoundExceptionContent(basePackageNameForClassGen));
         Files.writeString(Paths.get(domainCoreExceptionDir.toString(), "RepositoryOutputPortException.java"), generateRepositoryOutputPortExceptionContent(basePackageNameForClassGen));
 
+        if (environmentalCredentialsRequest.getSelectedSchema() != null && !environmentalCredentialsRequest.getSelectedSchema().isEmpty()) {
+            generateDomainClasses(environmentalCredentialsRequest, domainCoreMainJava, basePackageNameForClassGen);
+        }
+
         if (!useCrossCuttingLibrary) {
             Path domainCoreEntityDir = Paths.get(domainCoreMainJava.toString(), "entity");
             Files.createDirectories(domainCoreEntityDir);
@@ -237,7 +253,7 @@ public class ProjectService {
         }
         return Arrays.stream(str.split("-"))
                      .filter(part -> part != null && !part.isEmpty())
-                     .map(part -> part.substring(0, 1).toUpperCase() + part.substring(1).toLowerCase())
+                     .map(part -> part.substring(0, 1).toUpperCase(Locale.ENGLISH) + part.substring(1).toLowerCase(Locale.ENGLISH))
                      .collect(Collectors.joining());
     }
 
@@ -277,7 +293,7 @@ public class ProjectService {
             crossCuttingLib.getDependencies() != null && !crossCuttingLib.getDependencies().isEmpty()) {
             
             String libName = crossCuttingLib.getName();
-            String libVersionProperty = libName.toLowerCase().replace("-", "") + ".version";
+            String libVersionProperty = libName.toLowerCase(Locale.ENGLISH).replace("-", "") + ".version";
             propertiesBuilder.append(String.format("        <%s>%s</%s>\n", libVersionProperty, crossCuttingLib.getVersion(), libVersionProperty));
 
             crossCuttingDepsXmlBuilder.append("\n            <!-- Cross-Cutting Library: ").append(libName).append(" -->");
@@ -1103,5 +1119,305 @@ public class RepositoryOutputPortException extends RuntimeException {
     }
 }
 """, basePackageName);
+    }
+
+    private void generateDomainClasses(EnvironmentalCredentialsRequest envRequest, Path domainCoreMainJava, String basePackageName) {
+        String url = envRequest.getLocalDatasourceUrl();
+        String username = envRequest.getLocalDatasourceUsername();
+        String password = envRequest.getLocalDatasourcePassword();
+        String schema = envRequest.getSelectedSchema();
+
+        try (Connection conn = DriverManager.getConnection(url, username, password)) {
+            List<String> tables = getTables(conn, schema);
+            Map<String, Set<String>> foreignKeys = getForeignKeys(conn, schema);
+            Set<String> aggregateRoots = determineAggregateRoots(tables, foreignKeys);
+            Map<String, String> tableEntityTypes = envRequest.getTableEntityTypes();
+
+            for (String table : tables) {
+                String classNamePrefix = toPascalCase(table);
+                String extendsClass;
+                if (tableEntityTypes != null && tableEntityTypes.containsKey(table)) {
+                    extendsClass = tableEntityTypes.get(table);
+                } else {
+                    extendsClass = aggregateRoots.contains(table) ? "AggregateRoot" : "BaseDomainEntity";
+                }
+
+                // Generate Id class
+                Path valueObjectDir = Paths.get(domainCoreMainJava.toString(), "valueobject");
+                Files.createDirectories(valueObjectDir);
+                String idClassName = classNamePrefix + "Id";
+                String idClassContent = generateIdClassContent(basePackageName, idClassName);
+                Files.write(Paths.get(valueObjectDir.toString(), idClassName + ".java"), idClassContent.getBytes());
+
+                // Generate DomainEntity class
+                List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
+                Path entityDir = Paths.get(domainCoreMainJava.toString(), "entity");
+                Files.createDirectories(entityDir);
+                String domainEntityClassName = classNamePrefix + "DomainEntity";
+                String domainEntityClassContent = generateDomainEntityClassContent(basePackageName, domainEntityClassName, idClassName, columns, extendsClass, envRequest);
+                Files.write(Paths.get(entityDir.toString(), domainEntityClassName + ".java"), domainEntityClassContent.getBytes());
+            }
+        } catch (SQLException | IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private String generateIdClassContent(String basePackageName, String idClassName) {
+        return String.format("""
+package %s.domain.core.valueobject;
+
+import java.util.UUID;
+
+public class %s extends BaseId<UUID> {
+
+    public %s(UUID value) {
+        super(value);
+    }
+}
+""", basePackageName, idClassName, idClassName);
+    }
+
+    private String generateDomainEntityClassContent(String basePackageName, String domainEntityClassName, String idClassName, List<Map<String, String>> columns, String extendsClass, EnvironmentalCredentialsRequest envRequest) {
+        StringBuilder fields = new StringBuilder();
+        StringBuilder constructorParams = new StringBuilder();
+        StringBuilder constructorBody = new StringBuilder();
+        StringBuilder getters = new StringBuilder();
+        Set<String> imports = new TreeSet<>();
+
+        constructorParams.append(String.format("%s id, ", idClassName));
+        if (extendsClass.equals("AggregateRoot")) {
+            constructorBody.append(String.format("        super.setId(id);%n"));
+        } else {
+            constructorBody.append(String.format("        this.setId(id);%n"));
+        }
+
+        try (Connection conn = DriverManager.getConnection(
+                envRequest.getLocalDatasourceUrl(),
+                envRequest.getLocalDatasourceUsername(),
+                envRequest.getLocalDatasourcePassword())) {
+            
+            Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, envRequest.getSelectedSchema());
+            Set<String> aggregateRoots = determineAggregateRoots(getTables(conn, envRequest.getSelectedSchema()), getForeignKeys(conn, envRequest.getSelectedSchema()));
+            
+            String currentTable = domainEntityClassName.replace("DomainEntity", "").toLowerCase();
+            Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(currentTable, new HashMap<>());
+
+            for (Map<String, String> column : columns) {
+                String columnName = column.get("name");
+                if (!columnName.equals("id")) {
+                    String fieldName = toCamelCase(columnName);
+                    String fqnFieldType;
+                    
+                    // Check if this column is a foreign key to an aggregate root
+                    ForeignKeyInfo fkInfo = tableForeignKeys.get(columnName);
+                    if (fkInfo != null && aggregateRoots.contains(fkInfo.getPkTableName())) {
+                        // Use value object type for aggregate root references
+                        String referencedEntity = toPascalCase(fkInfo.getPkTableName());
+                        fqnFieldType = referencedEntity + "Id";
+                        imports.add(basePackageName + ".domain.core.valueobject." + fqnFieldType);
+                    } else {
+                        fqnFieldType = toJavaType(column.get("type"));
+                    }
+
+                    String simpleFieldType;
+                    if (fqnFieldType.contains(".")) {
+                        imports.add(fqnFieldType);
+                        simpleFieldType = fqnFieldType.substring(fqnFieldType.lastIndexOf('.') + 1);
+                    } else {
+                        simpleFieldType = fqnFieldType;
+                    }
+
+                    fields.append(String.format("    private final %s %s;%n", simpleFieldType, fieldName));
+                    constructorParams.append(String.format("%s %s, ", simpleFieldType, fieldName));
+                    constructorBody.append(String.format("        this.%s = %s;%n", fieldName, fieldName));
+
+                    String getterMethodName;
+                    if (simpleFieldType.equals("Boolean")) {
+                        if (fieldName.startsWith("is") && fieldName.length() > 2 && Character.isUpperCase(fieldName.charAt(2))) {
+                            getterMethodName = fieldName;
+                        } else {
+                            getterMethodName = "is" + toPascalCase(columnName);
+                        }
+                    } else {
+                        getterMethodName = "get" + toPascalCase(columnName);
+                    }
+                    getters.append(String.format("    public %s %s() {%n        return %s;%n    }%n%n", simpleFieldType, getterMethodName, fieldName));
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        if (constructorParams.length() > 0) {
+            constructorParams.setLength(constructorParams.length() - 2); // Remove last ", "
+        }
+
+        StringBuilder importStatements = new StringBuilder();
+        for (String imp : imports) {
+            importStatements.append(String.format("import %s;%n", imp));
+        }
+
+        return String.format("""
+package %s.domain.core.entity;
+
+import %s.domain.core.valueobject.%s;
+%s
+public class %s extends %s<%s> {
+
+%s
+    public %s(%s) {
+%s    }
+
+%s}
+""", basePackageName, basePackageName, idClassName, importStatements.toString(), domainEntityClassName, extendsClass, idClassName, fields.toString(), domainEntityClassName, constructorParams.toString(), constructorBody.toString(), getters.toString());
+    }
+
+    private List<String> getTables(Connection conn, String schema) throws SQLException {
+        List<String> tables = new ArrayList<>();
+        String query = "SELECT table_name FROM information_schema.tables WHERE table_schema = ?";
+        try (PreparedStatement pstmt = conn.prepareStatement(query)) {
+            pstmt.setString(1, schema);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    tables.add(rs.getString("table_name"));
+                }
+            }
+        }
+        return tables;
+    }
+
+    public Map<String, Set<String>> getForeignKeys(Connection conn, String schema) throws SQLException {
+        Map<String, Set<String>> foreignKeys = new HashMap<>();
+        Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, schema);
+        
+        for (Map.Entry<String, Map<String, ForeignKeyInfo>> entry : detailedForeignKeys.entrySet()) {
+            Set<String> referencedTables = entry.getValue().values().stream()
+                .map(ForeignKeyInfo::getPkTableName)
+                .collect(Collectors.toSet());
+            foreignKeys.put(entry.getKey(), referencedTables);
+        }
+        
+        return foreignKeys;
+    }
+
+    private static class ForeignKeyInfo {
+        private final String pkTableName;
+        private final String fkColumnName;
+        private final String pkColumnName;
+
+        public ForeignKeyInfo(String pkTableName, String fkColumnName, String pkColumnName) {
+            this.pkTableName = pkTableName;
+            this.fkColumnName = fkColumnName;
+            this.pkColumnName = pkColumnName;
+        }
+
+        public String getPkTableName() {
+            return pkTableName;
+        }
+
+        public String getFkColumnName() {
+            return fkColumnName;
+        }
+
+        public String getPkColumnName() {
+            return pkColumnName;
+        }
+    }
+
+    private Map<String, Map<String, ForeignKeyInfo>> getDetailedForeignKeys(Connection conn, String schema) throws SQLException {
+        Map<String, Map<String, ForeignKeyInfo>> foreignKeys = new HashMap<>();
+        DatabaseMetaData metaData = conn.getMetaData();
+        List<String> allTables = getTables(conn, schema);
+        
+        for (String tableName : allTables) {
+            try (ResultSet rs = metaData.getImportedKeys(conn.getCatalog(), schema, tableName)) {
+                while (rs.next()) {
+                    String pkTableName = rs.getString("PKTABLE_NAME");
+                    String fkColumnName = rs.getString("FKCOLUMN_NAME");
+                    String pkColumnName = rs.getString("PKCOLUMN_NAME");
+                    
+                    foreignKeys
+                        .computeIfAbsent(tableName, k -> new HashMap<>())
+                        .put(fkColumnName, new ForeignKeyInfo(pkTableName, fkColumnName, pkColumnName));
+                }
+            }
+        }
+        return foreignKeys;
+    }
+
+    public Set<String> determineAggregateRoots(List<String> allTables, Map<String, Set<String>> foreignKeys) {
+        Set<String> aggregateRoots = new HashSet<>();
+        // Rule 1: Tables with no outgoing FKs are roots.
+        for (String table : allTables) {
+            if (!foreignKeys.containsKey(table)) {
+                aggregateRoots.add(table);
+            }
+        }
+
+        // Rule 2: Iteratively find tables that only point to existing roots.
+        boolean changed;
+        do {
+            changed = false;
+            for (String table : allTables) {
+                if (!aggregateRoots.contains(table) && foreignKeys.containsKey(table)) {
+                    if (aggregateRoots.containsAll(foreignKeys.get(table))) {
+                        aggregateRoots.add(table);
+                        changed = true;
+                    }
+                }
+            }
+        } while (changed);
+
+        return aggregateRoots;
+    }
+
+    private List<Map<String, String>> getColumnsForTable(Connection conn, String schema, String table) throws SQLException {
+        List<Map<String, String>> columns = new ArrayList<>();
+        String query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = ? AND table_name = ?";
+        try (PreparedStatement pstmt = conn.prepareStatement(query)) {
+            pstmt.setString(1, schema);
+            pstmt.setString(2, table);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    columns.add(Map.of("name", rs.getString("column_name"), "type", rs.getString("data_type")));
+                }
+            }
+        }
+        return columns;
+    }
+
+    private String toPascalCase(String s) {
+        return Arrays.stream(s.split("_"))
+                .filter(part -> part != null && !part.isEmpty())
+                .map(part -> part.substring(0, 1).toUpperCase(Locale.ENGLISH) + part.substring(1).toLowerCase(Locale.ENGLISH))
+                .collect(Collectors.joining());
+    }
+
+    private String toCamelCase(String s) {
+        String pascalCase = toPascalCase(s);
+        return pascalCase.substring(0, 1).toLowerCase(Locale.ENGLISH) + pascalCase.substring(1);
+    }
+
+    private String toJavaType(String dbType) {
+        switch (dbType.toLowerCase(Locale.ENGLISH)) {
+            case "uuid":
+                return "java.util.UUID";
+            case "character varying":
+            case "varchar":
+            case "text":
+                return "String";
+            case "timestamp without time zone":
+            case "timestamp":
+                return "java.time.LocalDateTime";
+            case "timestamp with time zone":
+                return "java.time.ZonedDateTime";
+            case "numeric":
+                return "java.math.BigDecimal";
+            case "boolean":
+            case "bool":
+                return "Boolean";
+            default:
+                return "Object";
+        }
     }
 }

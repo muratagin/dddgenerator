@@ -1,5 +1,7 @@
 package com.muratagin.dddgenerator.domain.request;
 
+import java.util.Map;
+
 public class EnvironmentalCredentialsRequest {
     private String applicationName;
     private String serverPort;
@@ -14,7 +16,17 @@ public class EnvironmentalCredentialsRequest {
 
     private String selectedSchema;
 
+    private Map<String, String> tableEntityTypes;
+
     // Getters and Setters
+
+    public Map<String, String> getTableEntityTypes() {
+        return tableEntityTypes;
+    }
+
+    public void setTableEntityTypes(Map<String, String> tableEntityTypes) {
+        this.tableEntityTypes = tableEntityTypes;
+    }
 
     public String getApplicationName() {
         return applicationName;

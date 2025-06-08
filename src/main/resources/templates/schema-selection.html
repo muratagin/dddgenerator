@@ -224,6 +224,26 @@
         .back-button:hover {
             background-color: var(--button-secondary-hover-bg-color);
         }
+
+        .table-list {
+            list-style-type: none;
+            padding: 0;
+            margin-top: 10px;
+        }
+        .table-list-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px;
+            border-bottom: 1px solid var(--section-border-color);
+        }
+        .table-list-item:last-child {
+            border-bottom: none;
+        }
+        .table-list-item select {
+            width: 200px;
+            padding: 5px;
+        }
     </style>
 </head>
 <body>
@@ -256,31 +276,27 @@
 
                 <div th:if="${!#lists.isEmpty(schemas) AND connectionError == null}" class="form-group">
                     <label for="selectedSchema">Select Schema</label>
-                    <select id="selectedSchema" th:field="*{selectedSchema}">
-                        <option value="">-- Select a Schema (Optional) --</option>
+                    <select id="selectedSchema" name="selectedSchema" th:field="*{selectedSchema}">
+                        <option value="">-- Select a Schema --</option>
                         <option th:each="schema : ${schemas}" th:value="${schema}" th:text="${schema}"></option>
                     </select>
                     <div class="description">Select the database schema you want to use. This is optional.</div>
-                     <!-- Display error for selectedSchema if any (though not expected for now) -->
-                    <div th:if="${#fields.hasErrors('selectedSchema')}" class="error-message" th:errors="*{selectedSchema}"></div>
                 </div>
-                
-                <!-- Placeholder for displaying tables -->
-                <div id="tablesDisplayArea" style="margin-top: 20px;">
-                    <h4 style="color: var(--header-color); margin-bottom: 10px;" th:if="${!#lists.isEmpty(schemas) AND connectionError == null}">Tables in Selected Schema:</h4>
-                    <ul id="tablesList" style="list-style-type: none; padding-left: 0;">
-                        <!-- Tables will be listed here by JavaScript -->
+
+                <div id="tables-container" style="display: none; margin-top: 20px;">
+                    <h4>Tables in Selected Schema:</h4>
+                    <ul id="tables-list" class="table-list">
+                        <!-- Populated by JavaScript -->
                     </ul>
-                    <p id="tablesMessage" style="color: var(--description-text-color);"></p> <!-- For messages like 'No tables found' or errors -->
+                    <p id="tables-message" style="color: var(--description-text-color);"></p>
                 </div>
 
                 <div th:if="${#lists.isEmpty(schemas) AND connectionError == null AND noSchemasFoundMessage == null}" class="form-group">
                      <p>No schemas to select. You can proceed to generate the project.</p>
                 </div>
 
-
                 <div class="button-container">
-                    <button type="button" class="button back-button" onclick="window.location.href='/ui/environmental-credentials'">Back</button>
+                    <button type="button" class="button back-button" onclick="history.back()">Back</button>
                     <button type="submit" class="button generate-button">Generate Project</button>
                 </div>
             </div>
@@ -288,60 +304,88 @@
     </form>
 
     <script>
-        const themeToggle = document.getElementById('theme-toggle');
-        const htmlElement = document.documentElement;
+        document.addEventListener('DOMContentLoaded', function () {
+            const themeToggle = document.getElementById('theme-toggle');
+            const htmlElement = document.documentElement;
 
-        function applyTheme(theme) {
-            if (theme === 'light') {
+            // Immediately set theme based on localStorage
+            if (localStorage.getItem('theme') === 'light') {
                 htmlElement.classList.add('light-mode');
                 themeToggle.textContent = 'Switch to Dark Mode';
             } else {
-                htmlElement.classList.remove('light-mode');
                 themeToggle.textContent = 'Switch to Light Mode';
             }
-        }
-        const savedTheme = localStorage.getItem('theme') || 'dark';
-        applyTheme(savedTheme);
 
-        themeToggle.addEventListener('click', () => {
-            let currentTheme = htmlElement.classList.contains('light-mode') ? 'light' : 'dark';
-            let newTheme = currentTheme === 'light' ? 'dark' : 'light';
-            applyTheme(newTheme);
-            localStorage.setItem('theme', newTheme);
-        });
+            themeToggle.addEventListener('click', function() {
+                htmlElement.classList.toggle('light-mode');
+                if (htmlElement.classList.contains('light-mode')) {
+                    localStorage.setItem('theme', 'light');
+                    themeToggle.textContent = 'Switch to Dark Mode';
+                } else {
+                    localStorage.removeItem('theme');
+                    themeToggle.textContent = 'Switch to Light Mode';
+                }
+            });
 
-        const schemaSelect = document.getElementById('selectedSchema');
-        const tablesList = document.getElementById('tablesList');
-        const tablesMessage = document.getElementById('tablesMessage');
-        const tablesDisplayAreaTitle = document.querySelector('#tablesDisplayArea h4');
+            const schemaSelect = document.getElementById('selectedSchema');
+            const tablesContainer = document.getElementById('tables-container');
+            const tablesList = document.getElementById('tables-list');
+            const tablesMessage = document.getElementById('tables-message');
 
-        if (schemaSelect) {
-            schemaSelect.addEventListener('change', function() {
-                const selectedSchema = this.value;
-                tablesList.innerHTML = ''; // Clear previous tables
-                tablesMessage.textContent = ''; // Clear previous message
-                if (tablesDisplayAreaTitle) tablesDisplayAreaTitle.style.display = 'none';
+            function updateTables() {
+                const selectedSchema = schemaSelect.value;
+                tablesContainer.style.display = 'none';
+                tablesList.innerHTML = '';
+                tablesMessage.textContent = '';
 
                 if (selectedSchema) {
-                    if (tablesDisplayAreaTitle) tablesDisplayAreaTitle.style.display = 'block';
+                    tablesContainer.style.display = 'block';
                     tablesMessage.textContent = 'Loading tables...';
+
                     fetch(`/ui/get-tables?schemaName=${encodeURIComponent(selectedSchema)}`)
                         .then(response => {
                             if (!response.ok) {
-                                return response.json().then(err => { 
-                                    throw new Error(err.error || `HTTP error! Status: ${response.status}`); 
+                                return response.json().then(err => {
+                                    throw new Error(err.error || `HTTP error! Status: ${response.status}`);
                                 });
                             }
                             return response.json();
                         })
-                        .then(tables => {
-                            tablesMessage.textContent = ''; // Clear loading message
+                        .then(data => {
+                            tablesMessage.textContent = '';
+                            const tables = data.tables;
+                            const aggregateRoots = data.aggregateRoots;
+
                             if (tables && tables.length > 0) {
                                 tables.forEach(table => {
                                     const listItem = document.createElement('li');
-                                    listItem.textContent = table;
-                                    listItem.style.padding = '3px 0';
-                                    listItem.style.fontSize = '0.9em';
+                                    listItem.className = 'table-list-item';
+
+                                    const tableNameSpan = document.createElement('span');
+                                    tableNameSpan.textContent = table;
+                                    listItem.appendChild(tableNameSpan);
+
+                                    const select = document.createElement('select');
+                                    select.name = `tableEntityTypes[${table}]`;
+
+                                    const optionAggregate = document.createElement('option');
+                                    optionAggregate.value = 'AggregateRoot';
+                                    optionAggregate.textContent = 'Aggregate Root';
+
+                                    const optionEntity = document.createElement('option');
+                                    optionEntity.value = 'BaseDomainEntity';
+                                    optionEntity.textContent = 'Domain Entity';
+
+                                    select.appendChild(optionAggregate);
+                                    select.appendChild(optionEntity);
+
+                                    if (aggregateRoots.includes(table)) {
+                                        select.value = 'AggregateRoot';
+                                    } else {
+                                        select.value = 'BaseDomainEntity';
+                                    }
+
+                                    listItem.appendChild(select);
                                     tablesList.appendChild(listItem);
                                 });
                             } else {
@@ -350,22 +394,17 @@
                         })
                         .catch(error => {
                             console.error('Error fetching tables:', error);
-                            tablesMessage.textContent = `Error fetching tables: ${error.message}`;
-                            tablesList.innerHTML = ''; // Clear any partial list
+                            tablesMessage.textContent = `Error: ${error.message}`;
                         });
-                } else {
-                     if (tablesDisplayAreaTitle) tablesDisplayAreaTitle.style.display = 'none'; // Hide title if no schema selected
-                     tablesMessage.textContent = 'Select a schema to see its tables.';
                 }
-            });
-            // Initial message if no schema is selected
-            if (!schemaSelect.value && tablesDisplayAreaTitle) {
-                 tablesDisplayAreaTitle.style.display = 'none';
             }
-            if(!schemaSelect.value){
-                 tablesMessage.textContent = 'Select a schema to see its tables.';
+
+            schemaSelect.addEventListener('change', updateTables);
+
+            if (schemaSelect.value) {
+                updateTables();
             }
-        }
+        });
     </script>
 </body>
 </html> 

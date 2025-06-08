@@ -34,6 +34,7 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Controller
 @RequestMapping("/ui")
@@ -248,20 +249,35 @@ public class ProjectController {
             );
             // Use PreparedStatement to prevent SQL injection
             try (PreparedStatement preparedStatement = connection.prepareStatement(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name")) {
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name"
+            )) {
                 preparedStatement.setString(1, schemaName);
-                try (ResultSet resultSet = preparedStatement.executeQuery()) {
-                    while (resultSet.next()) {
-                        tables.add(resultSet.getString("table_name"));
+                try (ResultSet rs = preparedStatement.executeQuery()) {
+                    while (rs.next()) {
+                        tables.add(rs.getString("table_name"));
                     }
                 }
             }
+
+            // Get aggregate roots
+            Set<String> aggregateRoots = projectService.determineAggregateRoots(
+                tables,
+                projectService.getForeignKeys(connection, schemaName)
+            );
+
+            Map<String, Object> responseData = Map.of(
+                "tables", tables,
+                "aggregateRoots", aggregateRoots
+            );
+
+            return ResponseEntity.ok(responseData);
+
         } catch (ClassNotFoundException e) {
             connectionError = "PostgreSQL JDBC driver not found.";
-            // Log this error server-side as well
+             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", connectionError));
         } catch (SQLException e) {
-            connectionError = "Error connecting to database or fetching tables: " + e.getMessage();
-            // Log this error server-side as well
+            connectionError = "Error connecting to database or fetching data: " + e.getMessage();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", connectionError));
         } finally {
             if (connection != null) {
                 try {
@@ -271,11 +287,6 @@ public class ProjectController {
                 }
             }
         }
-
-        if (connectionError != null) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", connectionError));
-        }
-        return ResponseEntity.ok(tables);
     }
 
     @PostMapping("/generate-final")
@@ -395,5 +406,54 @@ public class ProjectController {
                 .contentLength(projectZipBytes.length)
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .body(resource);
+    }
+
+    @GetMapping("/selected-schema")
+    public String getSelectedSchema(Model model, @ModelAttribute("environmentalCredentialsRequest") EnvironmentalCredentialsRequest environmentalCredentialsRequest,
+                                    HttpSession session) {
+        String url = environmentalCredentialsRequest.getLocalDatasourceUrl();
+        String username = environmentalCredentialsRequest.getLocalDatasourceUsername();
+        String password = environmentalCredentialsRequest.getLocalDatasourcePassword();
+        List<String> tables = new ArrayList<>();
+        try {
+            tables = getTables(url, username, password, environmentalCredentialsRequest.getSelectedSchema());
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        model.addAttribute("tables", tables);
+        return "selected-schema";
+    }
+
+    private List<String> getTables(String url, String username, String password, String schema) throws SQLException {
+        List<String> tables = new ArrayList<>();
+        String query = "SELECT table_name FROM information_schema.tables WHERE table_schema = ?";
+
+        try (Connection conn = DriverManager.getConnection(url, username, password);
+             PreparedStatement pstmt = conn.prepareStatement(query)) {
+            pstmt.setString(1, schema);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    tables.add(rs.getString("table_name"));
+                }
+            }
+        }
+        return tables;
+    }
+
+    private List<Map<String, String>> getColumnsForTable(String url, String username, String password, String schema, String table) throws SQLException {
+        List<Map<String, String>> columns = new ArrayList<>();
+        String query = "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = ? AND table_name = ?";
+
+        try (Connection conn = DriverManager.getConnection(url, username, password);
+             PreparedStatement pstmt = conn.prepareStatement(query)) {
+            pstmt.setString(1, schema);
+            pstmt.setString(2, table);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    columns.add(Map.of("name", rs.getString("column_name"), "type", rs.getString("data_type")));
+                }
+            }
+        }
+        return columns;
     }
 }

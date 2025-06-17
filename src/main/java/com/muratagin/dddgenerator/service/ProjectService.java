@@ -77,7 +77,7 @@ public class ProjectService {
         String version = (projectRequest.getVersion() != null && !projectRequest.getVersion().isEmpty()) ? projectRequest.getVersion() : DEFAULT_VERSION;
         String description = projectRequest.getDescription();
 
-        String originalPackageName = projectRequest.getPackageName().toLowerCase();
+        String originalPackageName = projectRequest.getPackageName().toLowerCase(Locale.ENGLISH);
         String sanitizedPackageName = originalPackageName.replace('-', '_');
 
         String basePackagePath = sanitizedPackageName.replace('.', File.separatorChar);
@@ -93,7 +93,7 @@ public class ProjectService {
         Files.writeString(containerPom, generateContainerPomXmlContent(projectRequest, containerArtifactId, rootArtifactId, version));
         Path containerMainJavaDir = Paths.get(containerModuleDir.toString(), "src", "main", "java", basePackagePath, "container");
         Files.createDirectories(containerMainJavaDir);
-        Path containerAppFile = Paths.get(containerMainJavaDir.toString(), capitalize(rootArtifactId) + "ContainerApplication.java");
+        Path containerAppFile = Paths.get(containerMainJavaDir.toString(), snakeKebabCaseToPascalCase(rootArtifactId) + "ContainerApplication.java");
         Files.writeString(containerAppFile, generateContainerApplicationJavaContent(basePackageNameForClassGen, projectRequest, rootArtifactId, "container", useCrossCuttingLibrary));
         Path containerResources = Paths.get(containerModuleDir.toString(), "src", "main", "resources");
         Files.createDirectories(containerResources);
@@ -136,7 +136,7 @@ public class ProjectService {
         Path domainCoreMainJava = Paths.get(domainCoreModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "core");
         Files.createDirectories(domainCoreMainJava);
 
-        String domainExceptionClassName = useCrossCuttingLibrary ? capitalize(rootArtifactId) + "DomainException" : "DomainException";
+        String domainExceptionClassName = useCrossCuttingLibrary ? snakeKebabCaseToPascalCase(rootArtifactId) + "DomainException" : "DomainException";
 
         Path domainCoreExceptionDir = Paths.get(domainCoreMainJava.toString(), "exception");
         Files.createDirectories(domainCoreExceptionDir);
@@ -166,7 +166,11 @@ public class ProjectService {
         Files.writeString(appServicePom, generateApplicationServicePomXmlContent(projectRequest, appServiceArtifactId, domainParentArtifactId, domainCoreArtifactId, version));
         Path appServiceMainJava = Paths.get(appServiceModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "applicationservice");
         Files.createDirectories(appServiceMainJava);
+        if (environmentalCredentialsRequest.getSelectedSchema() != null && !environmentalCredentialsRequest.getSelectedSchema().isEmpty()) {
+            generateApplicationServiceClasses(projectRequest, environmentalCredentialsRequest, appServiceMainJava, basePackageNameForClassGen);
+        } else {
         Files.createFile(Paths.get(appServiceMainJava.toString(), ".gitkeep"));
+        }
 
         String infraParentArtifactId = rootArtifactId + "-infrastructure";
         Path infraModuleDir = Paths.get(tempDir.toString(), infraParentArtifactId);
@@ -251,10 +255,42 @@ public class ProjectService {
         if (str == null || str.isEmpty()) {
             return str;
         }
-        return Arrays.stream(str.split("-"))
-                     .filter(part -> part != null && !part.isEmpty())
-                     .map(part -> part.substring(0, 1).toUpperCase(Locale.ENGLISH) + part.substring(1).toLowerCase(Locale.ENGLISH))
-                     .collect(Collectors.joining());
+        return str.substring(0, 1).toUpperCase(Locale.ENGLISH) + str.substring(1);
+    }
+
+    private String snakeKebabCaseToPascalCase(String input) {
+        if (input == null || input.isEmpty()) {
+            return "";
+        }
+        return Arrays.stream(input.split("[_-]")) // Split by underscore or hyphen
+                .filter(part -> !part.isEmpty())
+                .map(part -> Character.toUpperCase(part.charAt(0)) + part.substring(1).toLowerCase(Locale.ENGLISH))
+                .collect(Collectors.joining());
+    }
+
+    private String snakeCaseToCamelCase(String s) {
+        if (s == null || s.isEmpty()) {
+            return s;
+        }
+        String pascalCase = snakeKebabCaseToPascalCase(s);
+        if (pascalCase.isEmpty()) {
+            return pascalCase;
+        }
+        return Character.toLowerCase(pascalCase.charAt(0)) + pascalCase.substring(1);
+    }
+
+    private String firstCharToLowerCase(String s) {
+        if (s == null || s.isEmpty()) {
+            return s;
+        }
+        return Character.toLowerCase(s.charAt(0)) + s.substring(1);
+    }
+
+    private String capitalizeFirstLetter(String input) {
+        if (input == null || input.isEmpty()) {
+            return "";
+        }
+        return Character.toUpperCase(input.charAt(0)) + input.substring(1);
     }
 
     private String generateRootPomXmlContent(ProjectRequest request, String effectiveVersion) {
@@ -506,13 +542,13 @@ public class ProjectService {
 
     private String generateContainerApplicationJavaContent(String basePackageName, ProjectRequest projectRequest, String rootArtifactId, String moduleSuffix, boolean useCrossCuttingLibrary) {
         String appName = capitalize(rootArtifactId) + capitalize(moduleSuffix) + "Application";
-        String moduleSpecificPackage = basePackageName + "." + moduleSuffix.replace("-", "");
+        String moduleSpecificPackage = basePackageName + "." + moduleSuffix.replace("-", "").toLowerCase(Locale.ENGLISH);
 
         if (useCrossCuttingLibrary) {
             CrossCuttingLibraryRequest crossCuttingLib = projectRequest.getCrossCuttingLibrary();
             String crossCuttingBasePackage = crossCuttingLib.getGroupId() + "." + crossCuttingLib.getName().replace("-", "");
 
-            return String.format("""
+        return String.format("""
 package %s;
 
 import org.springframework.boot.SpringApplication;
@@ -1154,7 +1190,7 @@ public class RepositoryOutputPortException extends RuntimeException {
             }
 
             for (String table : tables) {
-                String classNamePrefix = toPascalCase(table);
+                String classNamePrefix = snakeKebabCaseToPascalCase(table);
                 String extendsClass;
                 if (tableEntityTypes != null && tableEntityTypes.containsKey(table)) {
                     extendsClass = tableEntityTypes.get(table);
@@ -1172,7 +1208,7 @@ public class RepositoryOutputPortException extends RuntimeException {
                 Path entityDir = Paths.get(domainCoreMainJava.toString(), "entity");
                 Files.createDirectories(entityDir);
                 String domainEntityClassName = classNamePrefix + "DomainEntity";
-                String domainEntityClassContent = generateDomainEntityClassContent(basePackageName, domainEntityClassName, idClassName, columns, extendsClass, columnToEnumMap, table, detailedForeignKeys, aggregateRoots);
+                String domainEntityClassContent = generateDomainEntityClassContent(basePackageName, classNamePrefix, domainEntityClassName, idClassName, columns, extendsClass, columnToEnumMap, table, detailedForeignKeys, aggregateRoots);
                 Files.write(Paths.get(entityDir.toString(), domainEntityClassName + ".java"), domainEntityClassContent.getBytes());
             }
         } catch (SQLException | IOException e) {
@@ -1195,7 +1231,7 @@ public class RepositoryOutputPortException extends RuntimeException {
         }
 
         String classNamePart = spec.substring(0, braceStart).trim();
-        enumClassName = !classNamePart.isEmpty() ? classNamePart : toPascalCase(columnName);
+        enumClassName = !classNamePart.isEmpty() ? classNamePart : snakeKebabCaseToPascalCase(columnName);
 
         valuesPart = spec.substring(braceStart + 1, spec.length() - 1);
         if (valuesPart.trim().isEmpty()) {
@@ -1288,7 +1324,7 @@ public class %s extends BaseId<UUID> {
 """, basePackageName, idClassName, idClassName);
     }
 
-    private String generateDomainEntityClassContent(String basePackageName, String domainEntityClassName, String idClassName, List<Map<String, String>> columns, String extendsClass, Map<String, String> columnToEnumMap, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots) {
+    private String generateDomainEntityClassContent(String basePackageName, String entityName, String domainEntityClassName, String idClassName, List<Map<String, String>> columns, String extendsClass, Map<String, String> columnToEnumMap, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots) {
         StringBuilder fields = new StringBuilder();
         StringBuilder constructorParams = new StringBuilder();
         StringBuilder constructorBody = new StringBuilder();
@@ -1311,10 +1347,10 @@ public class %s extends BaseId<UUID> {
         for (Map<String, String> column : columns) {
             String columnName = column.get("name");
             if (!columnName.equals("id")) {
-                String camelCaseName = toCamelCase(columnName);
+                String camelCaseName = snakeCaseToCamelCase(columnName);
                 String fieldName;
                 if (JAVA_KEYWORDS.contains(camelCaseName)) {
-                    fieldName = fieldPrefix + toPascalCase(columnName);
+                    fieldName = firstCharToLowerCase(classNamePrefix) + snakeKebabCaseToPascalCase(columnName);
                 } else {
                     fieldName = camelCaseName;
                 }
@@ -1324,37 +1360,33 @@ public class %s extends BaseId<UUID> {
 
                 if (columnToEnumMap.containsKey(columnIdentifier)) {
                     fqnFieldType = columnToEnumMap.get(columnIdentifier);
+                } else if (tableForeignKeys.containsKey(columnName)) {
+                    fqnFieldType = basePackageName + ".domain.core.valueobject." + snakeKebabCaseToPascalCase(tableForeignKeys.get(columnName).getPkTableName()) + "Id";
                 } else {
-                    ForeignKeyInfo fkInfo = tableForeignKeys.get(columnName);
-                    if (fkInfo != null && aggregateRoots.contains(fkInfo.getPkTableName())) {
-                        String referencedEntity = toPascalCase(fkInfo.getPkTableName());
-                        fqnFieldType = basePackageName + ".domain.core.valueobject." + referencedEntity + "Id";
-                    } else {
-                        fqnFieldType = toJavaType(column.get("type"));
-                    }
+                    fqnFieldType = toJavaType(column.get("type"));
                 }
 
                 String simpleFieldType;
                 if (fqnFieldType.contains(".")) {
-                    imports.add(fqnFieldType);
+                    if (!fqnFieldType.startsWith("java.lang") && !fqnFieldType.startsWith(basePackageName + ".domain.core.valueobject")) {
+                        imports.add(fqnFieldType);
+                    } else if (fqnFieldType.startsWith(basePackageName + ".domain.core.valueobject")) {
+                        imports.add(fqnFieldType);
+                    }
                     simpleFieldType = fqnFieldType.substring(fqnFieldType.lastIndexOf('.') + 1);
                 } else {
                     simpleFieldType = fqnFieldType;
                 }
-
                 fields.append(String.format("    private final %s %s;%n", simpleFieldType, fieldName));
                 constructorParams.append(String.format("%s %s, ", simpleFieldType, fieldName));
                 constructorBody.append(String.format("        this.%s = %s;%n", fieldName, fieldName));
 
                 String getterMethodName;
                 if (simpleFieldType.equals("Boolean")) {
-                    if (fieldName.startsWith("is") && fieldName.length() > 2 && Character.isUpperCase(fieldName.charAt(2))) {
-                        getterMethodName = fieldName;
-                    } else {
-                        getterMethodName = "is" + toPascalCase(columnName);
-                    }
+                    // Always prefix boolean getters with "get" for consistency, as requested.
+                    getterMethodName = "get" + capitalizeFirstLetter(fieldName);
                 } else {
-                    getterMethodName = "get" + toPascalCase(columnName);
+                    getterMethodName = "get" + capitalizeFirstLetter(fieldName);
                 }
                 getters.append(String.format("    public %s %s() {%n        return %s;%n    }%n%n", simpleFieldType, getterMethodName, fieldName));
             }
@@ -1507,18 +1539,6 @@ public class %s extends %s<%s> {
         return columns;
     }
 
-    private String toPascalCase(String s) {
-        return Arrays.stream(s.split("_"))
-                .filter(part -> part != null && !part.isEmpty())
-                .map(part -> part.substring(0, 1).toUpperCase(Locale.ENGLISH) + part.substring(1).toLowerCase(Locale.ENGLISH))
-                .collect(Collectors.joining());
-    }
-
-    private String toCamelCase(String s) {
-        String pascalCase = toPascalCase(s);
-        return pascalCase.substring(0, 1).toLowerCase(Locale.ENGLISH) + pascalCase.substring(1);
-    }
-
     private String toJavaType(String dbType) {
         switch (dbType.toLowerCase(Locale.ENGLISH)) {
             case "uuid":
@@ -1565,4 +1585,391 @@ public class %s extends %s<%s> {
             "class", "finally", "long", "strictfp", "volatile", "const", "float", "native", "super", "while",
             "true", "false", "null"
     ));
+
+    private void generateApplicationServiceClasses(ProjectRequest projectRequest, EnvironmentalCredentialsRequest envRequest, Path appServiceMainJava, String basePackageName) throws IOException {
+        String url = envRequest.getLocalDatasourceUrl();
+        String username = envRequest.getLocalDatasourceUsername();
+        String password = envRequest.getLocalDatasourcePassword();
+        String schema = envRequest.getSelectedSchema();
+
+        try (Connection conn = DriverManager.getConnection(url, username, password)) {
+            List<String> tables = getTables(conn, schema);
+            Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, schema);
+
+            Map<String, Set<String>> foreignKeys = new HashMap<>();
+            for (Map.Entry<String, Map<String, ForeignKeyInfo>> entry : detailedForeignKeys.entrySet()) {
+                foreignKeys.put(entry.getKey(), entry.getValue().values().stream().map(ForeignKeyInfo::getPkTableName).collect(Collectors.toSet()));
+            }
+
+            Set<String> aggregateRoots = determineAggregateRoots(tables, foreignKeys);
+            Map<String, String> tableEntityTypes = envRequest.getTableEntityTypes();
+            Map<String, String> columnToEnumMap = new HashMap<>();
+
+            for (String table : tables) {
+                List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
+                for (Map<String, String> column : columns) {
+                    String comment = column.get("comment");
+                    if (comment != null && !comment.isBlank()) {
+                        String enumFqn = generateEnumIfApplicable(comment, column.get("name"), basePackageName, Paths.get(appServiceMainJava.toString().replace("application-service", "domain-core")));
+                        if (enumFqn != null) {
+                            columnToEnumMap.put(table + "." + column.get("name"), enumFqn);
+                        }
+                    }
+                }
+            }
+
+            Set<String> finalAggregateRoots = new HashSet<>();
+            for (String table : tables) {
+                String entityType;
+                if (tableEntityTypes != null && tableEntityTypes.containsKey(table)) {
+                    entityType = tableEntityTypes.get(table);
+                } else {
+                    entityType = aggregateRoots.contains(table) ? "AggregateRoot" : "BaseDomainEntity";
+                }
+                if ("AggregateRoot".equals(entityType)) {
+                    finalAggregateRoots.add(table);
+                }
+            }
+
+            if (finalAggregateRoots.isEmpty()) {
+                Files.createFile(Paths.get(appServiceMainJava.toString(), ".gitkeep"));
+                return;
+            }
+
+            String domainMapperName = snakeKebabCaseToPascalCase(projectRequest.getArtifactId()) + "DomainMapper";
+            generateDomainMapper(domainMapperName, basePackageName, appServiceMainJava, finalAggregateRoots, conn, schema, columnToEnumMap, detailedForeignKeys, aggregateRoots);
+
+            for (String rootTable : finalAggregateRoots) {
+                generateRepositoryInterface(rootTable, basePackageName, appServiceMainJava);
+                generateCommandClasses(rootTable, basePackageName, appServiceMainJava, conn, schema, detailedForeignKeys, aggregateRoots, columnToEnumMap, domainMapperName, projectRequest);
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void generateDomainMapper(String domainMapperName, String basePackageName, Path appServiceMainJava, Set<String> aggregateRoots, Connection conn, String schema, Map<String, String> columnToEnumMap, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> allAggregateRoots) throws IOException, SQLException {
+        Path mapperDir = Paths.get(appServiceMainJava.toString(), "mapper");
+        Files.createDirectories(mapperDir);
+        StringBuilder methods = new StringBuilder();
+        Set<String> mapperImports = new TreeSet<>();
+
+        mapperImports.add("import org.springframework.stereotype.Component;");
+        mapperImports.add(String.format("import %s.domain.core.entity.*;", basePackageName));
+        mapperImports.add("import java.time.ZonedDateTime;");
+
+        for (String rootTable : aggregateRoots) {
+            String entityName = snakeKebabCaseToPascalCase(rootTable);
+            String domainEntityName = entityName + "DomainEntity";
+            String createCommandName = "Create" + entityName + "Command";
+            String createCommandVar = firstCharToLowerCase(createCommandName);
+            String createResponseName = "Create" + entityName + "Response";
+
+            List<Map<String, String>> columns = getColumnsForTable(conn, schema, rootTable);
+            Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(rootTable, new HashMap<>());
+
+            // Generate Command to DomainEntity mapping
+            StringBuilder domainEntityConstructorArgs = new StringBuilder();
+            domainEntityConstructorArgs.append(String.format("new %s(null)", entityName + "Id")); // For ID, always new ID(null) for creation
+
+            StringBuilder responseConstructorArgs = new StringBuilder();
+            String rootTableCamelCase = snakeCaseToCamelCase(rootTable);
+            responseConstructorArgs.append(String.format("%sDomainEntity.getId().getValue()", rootTableCamelCase));
+
+            // Collect imports for domain entities and value objects
+            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.create.%s;", basePackageName, rootTable.toLowerCase(Locale.ENGLISH), createCommandName));
+            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.create.%s;", basePackageName, rootTable.toLowerCase(Locale.ENGLISH), createResponseName));
+            mapperImports.add(String.format("import %s.domain.core.valueobject.%sId;", basePackageName, entityName));
+
+            for (Map<String, String> column : columns) {
+                String columnName = column.get("name");
+                if (columnName.equals("id")) continue;
+
+                String camelCaseName = snakeCaseToCamelCase(columnName);
+                String fieldName;
+                if (JAVA_KEYWORDS.contains(camelCaseName)) {
+                    fieldName = firstCharToLowerCase(entityName) + snakeKebabCaseToPascalCase(columnName);
+                } else {
+                    fieldName = camelCaseName;
+                }
+
+                String columnIdentifier = rootTable + "." + columnName;
+
+                // For Command to DomainEntity mapping
+                if (columnToEnumMap.containsKey(columnIdentifier)) {
+                    domainEntityConstructorArgs.append(String.format(", %s.get%s()", createCommandVar, capitalizeFirstLetter(fieldName)));
+                } else if (tableForeignKeys.containsKey(columnName)) {
+                    String referencedEntityPascal = snakeKebabCaseToPascalCase(tableForeignKeys.get(columnName).getPkTableName());
+                    domainEntityConstructorArgs.append(String.format(", new %sId(%s.get%s())", referencedEntityPascal, createCommandVar, capitalizeFirstLetter(fieldName)));
+                    mapperImports.add(String.format("import %s.domain.core.valueobject.%sId;", basePackageName, referencedEntityPascal));
+                } else if (columnName.equals("occurred_at")) {
+                    domainEntityConstructorArgs.append(", now"); // Special handling for 'now' from handler
+                } else {
+                    domainEntityConstructorArgs.append(String.format(", %s.get%s()", createCommandVar, capitalizeFirstLetter(fieldName)));
+                }
+
+                // For DomainEntity to Response mapping
+                if (columnToEnumMap.containsKey(columnIdentifier)) {
+                    responseConstructorArgs.append(String.format(", %sDomainEntity.get%s()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
+                } else if (tableForeignKeys.containsKey(columnName)) {
+                    responseConstructorArgs.append(String.format(", %sDomainEntity.get%s().getValue()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
+                } else {
+                    responseConstructorArgs.append(String.format(", %sDomainEntity.get%s()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
+                }
+            }
+
+            methods.append(String.format("    public %s %sTo%s(%s %s, ZonedDateTime now) {\n", domainEntityName, createCommandVar, domainEntityName, createCommandName, createCommandVar));
+            methods.append(String.format("        return new %s(%s);\n", domainEntityName, domainEntityConstructorArgs.toString()));
+            methods.append("    }\n\n");
+
+            methods.append(String.format("    public %s %sTo%s(%s %s) {\n", createResponseName, firstCharToLowerCase(domainEntityName), createResponseName, domainEntityName, firstCharToLowerCase(domainEntityName)));
+            methods.append(String.format("        return new %s(%s);\n", createResponseName, responseConstructorArgs.toString()));
+            methods.append("    }\n\n");
+        }
+
+    String importStatements = mapperImports.stream().collect(Collectors.joining("\n"));
+
+    String content = String.format("""
+package %s.domain.applicationservice.mapper;
+
+%s
+
+@Component
+public class %s {
+
+%s
+}
+""", basePackageName, importStatements, domainMapperName, methods.toString());
+    Files.write(Paths.get(mapperDir.toString(), domainMapperName + ".java"), content.getBytes());
+}
+
+private void generateRepositoryInterface(String tableName, String basePackageName, Path appServiceMainJava) throws IOException {
+        String entityName = snakeKebabCaseToPascalCase(tableName);
+        String domainEntityName = entityName + "DomainEntity";
+        Path portsDir = Paths.get(appServiceMainJava.toString(), "ports", "output", "repository");
+        Files.createDirectories(portsDir);
+        String content = String.format("""
+package %s.domain.applicationservice.ports.output.repository;
+
+import %s.domain.core.entity.%s;
+
+public interface %sRepository {
+    %s create(%s entity);
+}
+""", basePackageName, basePackageName, domainEntityName, entityName, domainEntityName, domainEntityName);
+        Files.write(Paths.get(portsDir.toString(), entityName + "Repository.java"), content.getBytes());
+    }
+
+    private void generateCommandClasses(String tableName, String basePackageName, Path appServiceMainJava, Connection conn, String schema, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap, String domainMapperName, ProjectRequest projectRequest) throws IOException, SQLException {
+        String entityName = snakeKebabCaseToPascalCase(tableName);
+        String entityNameLower = tableName.toLowerCase().replace("_", "");
+        Path createCommandDir = Paths.get(appServiceMainJava.toString(), "commands", entityNameLower, "create");
+        Files.createDirectories(createCommandDir);
+        Files.createDirectories(Paths.get(appServiceMainJava.toString(), "commands", entityNameLower, "update"));
+        Files.createDirectories(Paths.get(appServiceMainJava.toString(), "commands", entityNameLower, "delete"));
+        Files.createDirectories(Paths.get(appServiceMainJava.toString(), "queries", entityNameLower, "getbyid"));
+
+        List<Map<String, String>> columns = getColumnsForTable(conn, schema, tableName);
+
+        String createCommandContent = generateCreateCommand(entityName, basePackageName, columns, tableName, detailedForeignKeys, aggregateRoots, columnToEnumMap);
+        Files.write(Paths.get(createCommandDir.toString(), "Create" + entityName + "Command.java"), createCommandContent.getBytes());
+
+        String createResponseContent = generateCreateResponse(entityName, basePackageName, columns, tableName, detailedForeignKeys, aggregateRoots, columnToEnumMap);
+        Files.write(Paths.get(createCommandDir.toString(), "Create" + entityName + "Response.java"), createResponseContent.getBytes());
+
+        String commandHandlerContent = generateCreateCommandHandler(entityName, basePackageName, domainMapperName);
+        Files.write(Paths.get(createCommandDir.toString(), entityName + "CreateCommandHandler.java"), commandHandlerContent.getBytes());
+    }
+
+    private String generateCreateCommandHandler(String entityName, String basePackageName, String domainMapperName) {
+        String repositoryName = entityName + "Repository";
+        String repositoryVarName = firstCharToLowerCase(repositoryName);
+        String commandName = "Create" + entityName + "Command";
+        String commandVarName = firstCharToLowerCase(commandName);
+        String domainEntityName = entityName + "DomainEntity";
+        String domainMapperVarName = firstCharToLowerCase(domainMapperName);
+
+        return String.format("""
+package %s.domain.applicationservice.commands.%s.create;
+
+import %s.domain.applicationservice.mapper.%s;
+import %s.domain.applicationservice.ports.output.repository.%s;
+import %s.domain.core.entity.%s;
+import %s.domain.core.exception.RepositoryOutputPortException;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+
+@Slf4j
+@Component
+public class %sCreateCommandHandler {
+
+    private final %s %s;
+    private final %s %s;
+
+    public %sCreateCommandHandler(%s %s,
+                                    %s %s) {
+        this.%s = %s;
+        this.%s = %s;
+    }
+
+    @Transactional
+    public %s create%s(%s %s) {
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("UTC"));
+        %s domainEntity = %s.%sTo%s(%s, now);
+        %s savedDomainEntity = %s.create(domainEntity);
+        if (savedDomainEntity == null) {
+            log.error("Could not create %s");
+            throw new RepositoryOutputPortException();
+        }
+        log.info("Returning %s for %s id: {}", savedDomainEntity.getId().getValue());
+        return savedDomainEntity;
+    }
+}
+""",
+            basePackageName, entityName.toLowerCase(),
+            basePackageName, domainMapperName,
+            basePackageName, repositoryName,
+            basePackageName, domainEntityName,
+            basePackageName,
+            entityName, repositoryName, repositoryVarName, domainMapperName, domainMapperVarName,
+            entityName, repositoryName, repositoryVarName, domainMapperName, domainMapperVarName,
+            repositoryVarName, repositoryVarName, domainMapperVarName, domainMapperVarName,
+            domainEntityName, entityName, commandName, commandVarName,
+            domainEntityName, domainMapperVarName, commandVarName, domainEntityName, commandVarName,
+            domainEntityName, repositoryVarName,
+            entityName.toLowerCase(),
+            domainEntityName, entityName.toLowerCase());
+    }
+
+    private String generateCreateCommand(String entityName, String basePackageName, List<Map<String, String>> columns, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap) {
+        StringBuilder fields = new StringBuilder();
+        Set<String> imports = new TreeSet<>();
+        imports.add("jakarta.validation.constraints.NotNull;");
+        imports.add("lombok.AllArgsConstructor;");
+        imports.add("lombok.Builder;");
+        imports.add("lombok.Getter;");
+        imports.add("lombok.ToString;");
+        imports.add("com.fasterxml.jackson.annotation.JsonIgnoreProperties;");
+
+        Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(currentTable, new HashMap<>());
+
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("name");
+            if (columnName.equals("id")) continue;
+
+            String camelCaseName = snakeCaseToCamelCase(columnName);
+            String fieldName;
+            if (JAVA_KEYWORDS.contains(camelCaseName)) {
+                fieldName = firstCharToLowerCase(entityName) + snakeKebabCaseToPascalCase(columnName);
+            } else {
+                fieldName = camelCaseName;
+            }
+
+            String fqnFieldType;
+            String columnIdentifier = currentTable + "." + columnName;
+
+            if (columnToEnumMap.containsKey(columnIdentifier)) {
+                fqnFieldType = columnToEnumMap.get(columnIdentifier);
+            } else if (tableForeignKeys.containsKey(columnName)) {
+                fqnFieldType = "java.util.UUID";
+            } else {
+                fqnFieldType = toJavaType(column.get("type"));
+            }
+
+            String simpleFieldType;
+            if (fqnFieldType.contains(".")) {
+                if (!fqnFieldType.startsWith("java.lang")) {
+                    imports.add(fqnFieldType + ";");
+                }
+                simpleFieldType = fqnFieldType.substring(fqnFieldType.lastIndexOf('.') + 1);
+            } else {
+                simpleFieldType = fqnFieldType;
+            }
+            fields.append("    @NotNull\n");
+            fields.append(String.format("    private final %s %s;\n\n", simpleFieldType, fieldName));
+        }
+        String importStatements = imports.stream().map(s -> "import " + s).collect(Collectors.joining("\n"));
+
+        return String.format("""
+package %s.domain.applicationservice.commands.%s.create;
+
+%s
+
+@Getter
+@Builder
+@AllArgsConstructor
+@ToString
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class Create%sCommand {
+
+%s
+}
+""", basePackageName, entityName.toLowerCase(Locale.ENGLISH), importStatements, entityName, fields.toString());
+    }
+
+    private String generateCreateResponse(String entityName, String basePackageName, List<Map<String, String>> columns, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap) {
+        StringBuilder fields = new StringBuilder();
+        Set<String> imports = new TreeSet<>();
+        imports.add("import lombok.AllArgsConstructor;");
+        imports.add("import lombok.Getter;");
+        imports.add("import java.util.UUID;");
+
+        Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(currentTable, new HashMap<>());
+
+        fields.append("    private final UUID id;\n\n");
+
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("name");
+            if (columnName.equals("id")) continue;
+
+            String camelCaseName = snakeCaseToCamelCase(columnName);
+            String fieldName;
+            if (JAVA_KEYWORDS.contains(camelCaseName)) {
+                fieldName = firstCharToLowerCase(entityName) + snakeKebabCaseToPascalCase(columnName);
+            } else {
+                fieldName = camelCaseName;
+            }
+
+            String fqnFieldType;
+            String columnIdentifier = currentTable + "." + columnName;
+
+            if (columnToEnumMap.containsKey(columnIdentifier)) {
+                fqnFieldType = columnToEnumMap.get(columnIdentifier);
+            } else if (tableForeignKeys.containsKey(columnName)) {
+                fqnFieldType = "java.util.UUID";
+            } else {
+                fqnFieldType = toJavaType(column.get("type"));
+            }
+
+            String simpleFieldType;
+            if (fqnFieldType.contains(".")) {
+                if (!fqnFieldType.startsWith("java.lang")) {
+                    imports.add("import " + fqnFieldType + ";");
+                }
+                simpleFieldType = fqnFieldType.substring(fqnFieldType.lastIndexOf('.') + 1);
+            } else {
+                simpleFieldType = fqnFieldType;
+            }
+            fields.append(String.format("    private final %s %s;\n\n", simpleFieldType, fieldName));
+        }
+        String importStatements = imports.stream().collect(Collectors.joining("\n"));
+
+        return String.format("""
+package %s.domain.applicationservice.commands.%s.create;
+
+%s
+
+@Getter
+@AllArgsConstructor
+public class Create%sResponse {
+
+%s
+}
+""", basePackageName, entityName.toLowerCase(Locale.ENGLISH), importStatements, entityName, fields.toString());
+    }
 }

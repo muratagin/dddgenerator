@@ -31,6 +31,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import java.util.stream.Collectors;
 import java.util.Locale;
+import java.util.Optional;
 
 @Service
 public class ProjectService {
@@ -1787,22 +1788,34 @@ public class %s {
 }
 
 private void generateRepositoryInterface(String tableName, String basePackageName, Path appServiceMainJava) throws IOException {
-        String entityName = snakeKebabCaseToPascalCase(tableName);
-        String domainEntityName = entityName + "DomainEntity";
-        Path portsDir = Paths.get(appServiceMainJava.toString(), "ports", "output", "repository");
-        Files.createDirectories(portsDir);
-        String content = String.format("""
+    String entityName = snakeKebabCaseToPascalCase(tableName);
+    String domainEntityName = entityName + "DomainEntity";
+    Path portsDir = Paths.get(appServiceMainJava.toString(), "ports", "output", "repository");
+    Files.createDirectories(portsDir);
+    String content = String.format("""
 package %s.domain.applicationservice.ports.output.repository;
 
 import %s.domain.core.entity.%s;
+import java.util.UUID;
+import java.time.ZonedDateTime;
+import java.util.Optional;
 
 public interface %sRepository {
     %s create(%s entity);
     %s update(%s entity);
+    %s delete(%s entity, UUID updatedBy, ZonedDateTime now);
+    Optional<%s> getById(UUID id);
 }
-""", basePackageName, basePackageName, domainEntityName, entityName, domainEntityName, domainEntityName, domainEntityName, domainEntityName);
-        Files.write(Paths.get(portsDir.toString(), entityName + "Repository.java"), content.getBytes());
-    }
+""",
+        basePackageName, basePackageName, domainEntityName,
+        entityName,
+        domainEntityName, domainEntityName,
+        domainEntityName, domainEntityName,
+        domainEntityName, domainEntityName,
+        domainEntityName
+    );
+    Files.write(Paths.get(portsDir.toString(), entityName + "Repository.java"), content.getBytes());
+}
 
     private void generateCommandClasses(String tableName, String basePackageName, Path appServiceMainJava, Connection conn, String schema, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap, String domainMapperName, ProjectRequest projectRequest) throws IOException, SQLException {
         String entityName = snakeKebabCaseToPascalCase(tableName);
@@ -1839,6 +1852,13 @@ public interface %sRepository {
 
         String updateCommandName = "Update" + entityName + "Command";
         String updateCommandVar = firstCharToLowerCase(updateCommandName);
+
+        // Delete
+        String deleteResponseContent = generateDeleteResponse(entityName, basePackageName);
+        Files.write(Paths.get(deleteCommandDir.toString(), "Delete" + entityName + "Response.java"), deleteResponseContent.getBytes());
+
+        String deleteHandlerContent = generateDeleteCommandHandler(entityName, basePackageName);
+        Files.write(Paths.get(deleteCommandDir.toString(), entityName + "DeleteCommandHandler.java"), deleteHandlerContent.getBytes());
     }
 
     private String generateCreateCommandHandler(String entityName, String basePackageName, String domainMapperName) {
@@ -2224,5 +2244,83 @@ public class %sUpdateCommandHandler {
             domainEntityName, repositoryVarName,
             entityName.toLowerCase(),
             domainEntityName, entityName.toLowerCase());
+    }
+
+    private String generateDeleteCommandHandler(String entityName, String basePackageName) {
+        String repositoryName = entityName + "Repository";
+        String domainEntityName = entityName + "DomainEntity";
+        String entityLower = entityName.toLowerCase();
+        String repositoryVar = firstCharToLowerCase(repositoryName);
+        return String.format("""
+package %s.domain.applicationservice.commands.%s.delete;
+
+import %s.domain.applicationservice.ports.output.repository.%s;
+import %s.domain.core.entity.%s;
+import %s.domain.core.exception.DomainEntityNotFoundException;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.Optional;
+import java.util.UUID;
+
+@Slf4j
+@Component
+public class %sDeleteCommandHandler {
+
+    private final %s %s;
+
+    public %sDeleteCommandHandler(%s %s) {
+        this.%s = %s;
+    }
+
+    @Transactional
+    public Delete%sResponse delete(UUID id, UUID updatedBy) {
+        Optional<%s> domainEntityOptional = %s.getById(id);
+        if (domainEntityOptional.isPresent()) {
+            ZonedDateTime now = ZonedDateTime.now(ZoneId.of(\"UTC\"));
+            %s deletedDomainEntity = %s.delete(domainEntityOptional.get(), updatedBy, now);
+            return new Delete%sResponse(id, now, updatedBy);
+        } else {
+            throw new DomainEntityNotFoundException();
+        }
+    }
+}
+""",
+            basePackageName, entityLower,
+            basePackageName, repositoryName,
+            basePackageName, domainEntityName,
+            basePackageName,
+            entityName, repositoryName, repositoryVar,
+            entityName, repositoryName, repositoryVar,
+            repositoryVar, repositoryVar,
+            entityName,
+            domainEntityName, repositoryVar,
+            domainEntityName, repositoryVar,
+            entityName
+        );
+    }
+
+    private String generateDeleteResponse(String entityName, String basePackageName) {
+        return String.format("""
+package %s.domain.applicationservice.commands.%s.delete;
+
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import java.time.ZonedDateTime;
+import java.util.UUID;
+
+@Getter
+@AllArgsConstructor
+public class Delete%sResponse {
+    private final UUID id;
+    private final ZonedDateTime updatedAt;
+    private final UUID updatedBy;
+}
+""",
+            basePackageName, entityName.toLowerCase(), entityName
+        );
     }
 }

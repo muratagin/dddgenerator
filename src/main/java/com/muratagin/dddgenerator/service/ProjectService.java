@@ -1595,80 +1595,41 @@ public class %s extends %s<%s> {
     ));
 
     private void generateApplicationServiceClasses(ProjectRequest projectRequest, EnvironmentalCredentialsRequest envRequest, Path appServiceMainJava, String basePackageName) throws IOException {
-        boolean useCrossCuttingLibrary = projectRequest.getCrossCuttingLibrary() != null;
-        if (!useCrossCuttingLibrary) {
-            Path queryBaseDir = Paths.get(appServiceMainJava.toString(), "queries", "base");
-            Files.createDirectories(queryBaseDir);
-
-            String domainConstantsContent = generateDomainConstantsContent(basePackageName);
-            Files.write(Paths.get(queryBaseDir.toString(), "DomainConstants.java"), domainConstantsContent.getBytes());
-
-            String baseQueryContent = generateBaseQueryContent(basePackageName);
-            Files.write(Paths.get(queryBaseDir.toString(), "BaseQuery.java"), baseQueryContent.getBytes());
-
-            String baseQueryResponseContent = generateBaseQueryResponseContent(basePackageName);
-            Files.write(Paths.get(queryBaseDir.toString(), "BaseQueryResponse.java"), baseQueryResponseContent.getBytes());
-        }
-
-        String url = envRequest.getLocalDatasourceUrl();
-        String username = envRequest.getLocalDatasourceUsername();
-        String password = envRequest.getLocalDatasourcePassword();
-        String schema = envRequest.getSelectedSchema();
-
-        try (Connection conn = DriverManager.getConnection(url, username, password)) {
+        try (Connection conn = DriverManager.getConnection(envRequest.getLocalDatasourceUrl(), envRequest.getLocalDatasourceUsername(), envRequest.getLocalDatasourcePassword())) {
+            String schema = envRequest.getSelectedSchema();
             List<String> tables = getTables(conn, schema);
+            Map<String, Set<String>> foreignKeys = getForeignKeys(conn, schema);
+            Set<String> aggregateRoots = determineAggregateRoots(tables, foreignKeys);
             Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, schema);
 
-            Map<String, Set<String>> foreignKeys = new HashMap<>();
-            for (Map.Entry<String, Map<String, ForeignKeyInfo>> entry : detailedForeignKeys.entrySet()) {
-                foreignKeys.put(entry.getKey(), entry.getValue().values().stream().map(ForeignKeyInfo::getPkTableName).collect(Collectors.toSet()));
-            }
-
-            Set<String> aggregateRoots = determineAggregateRoots(tables, foreignKeys);
-            Map<String, String> tableEntityTypes = envRequest.getTableEntityTypes();
             Map<String, String> columnToEnumMap = new HashMap<>();
+            String domainCoreModulePath = appServiceMainJava.toString().replace("application-service", "domain-core");
 
             for (String table : tables) {
                 List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
                 for (Map<String, String> column : columns) {
-                    String comment = column.get("comment");
+                    String comment = column.get("REMARKS");
+                    String columnName = column.get("COLUMN_NAME");
                     if (comment != null && !comment.isBlank()) {
-                        String enumFqn = generateEnumIfApplicable(comment, column.get("name"), basePackageName, Paths.get(appServiceMainJava.toString().replace("application-service", "domain-core")));
+                        String enumFqn = generateEnumIfApplicable(comment, columnName, basePackageName, Paths.get(domainCoreModulePath));
                         if (enumFqn != null) {
-                            columnToEnumMap.put(table + "." + column.get("name"), enumFqn);
+                            columnToEnumMap.put(table + "." + columnName, enumFqn);
                         }
                     }
                 }
             }
 
-            Set<String> finalAggregateRoots = new HashSet<>();
-            for (String table : tables) {
-                String entityType;
-                if (tableEntityTypes != null && tableEntityTypes.containsKey(table)) {
-                    entityType = tableEntityTypes.get(table);
-                } else {
-                    entityType = aggregateRoots.contains(table) ? "AggregateRoot" : "BaseDomainEntity";
-                }
-                if ("AggregateRoot".equals(entityType)) {
-                    finalAggregateRoots.add(table);
-                }
-            }
-
-            if (finalAggregateRoots.isEmpty()) {
-                Files.createFile(Paths.get(appServiceMainJava.toString(), ".gitkeep"));
-                return;
-            }
-
             String domainMapperName = snakeKebabCaseToPascalCase(projectRequest.getArtifactId()) + "DomainMapper";
-            generateDomainMapper(domainMapperName, basePackageName, appServiceMainJava, finalAggregateRoots, conn, schema, columnToEnumMap, detailedForeignKeys, aggregateRoots);
+            generateDomainMapper(domainMapperName, basePackageName, appServiceMainJava, aggregateRoots, conn, schema, columnToEnumMap, detailedForeignKeys, aggregateRoots);
 
-            for (String rootTable : finalAggregateRoots) {
-                generateRepositoryInterface(rootTable, basePackageName, appServiceMainJava);
-                generateCommandClasses(rootTable, basePackageName, appServiceMainJava, conn, schema, detailedForeignKeys, aggregateRoots, columnToEnumMap, domainMapperName, projectRequest);
+            for (String table : tables) {
+                if (aggregateRoots.contains(table)) {
+                    generateRepositoryInterface(table, basePackageName, appServiceMainJava);
+                    generateCommandClasses(table, basePackageName, appServiceMainJava, conn, schema, detailedForeignKeys, aggregateRoots, columnToEnumMap, domainMapperName, projectRequest);
+                }
             }
-
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException("Failed to generate application service classes", e);
         }
     }
 

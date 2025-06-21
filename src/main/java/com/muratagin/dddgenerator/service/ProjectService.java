@@ -1769,6 +1769,13 @@ public class %s extends %s<%s> {
             methods.append(String.format("    public %s %sDomainEntityToUpdate%sResponse(%s %sDomainEntity) {\n", updateResponseName, rootTableCamelCase, entityName, domainEntityName, rootTableCamelCase));
             methods.append(String.format("        return new %s(%s);\n", updateResponseName, responseConstructorArgs.toString()));
             methods.append("    }\n\n");
+
+            // --- GET BY ID methods ---
+            String getByIdResponseName = "GetById" + entityName + "Response";
+            mapperImports.add(String.format("import %s.domain.applicationservice.queries.%s.getbyid.%s;", basePackageName, rootTable.toLowerCase(Locale.ENGLISH), getByIdResponseName));
+            methods.append(String.format("    public %s %sDomainEntityToGetById%sResponse(%s %sDomainEntity) {\n", getByIdResponseName, rootTableCamelCase, entityName, domainEntityName, rootTableCamelCase));
+            methods.append(String.format("        return new %s(%s);\n", getByIdResponseName, responseConstructorArgs.toString()));
+            methods.append("    }\n\n");
         }
 
         String importStatements = mapperImports.stream().collect(Collectors.joining("\n"));
@@ -1859,6 +1866,14 @@ public interface %sRepository {
 
         String deleteHandlerContent = generateDeleteCommandHandler(entityName, basePackageName);
         Files.write(Paths.get(deleteCommandDir.toString(), entityName + "DeleteCommandHandler.java"), deleteHandlerContent.getBytes());
+
+        // Queries - getById
+        Path getByIdQueryDir = Paths.get(appServiceMainJava.toString(), "queries", entityNameLower, "getbyid");
+        Files.createDirectories(getByIdQueryDir);
+        String getByIdQueryHandlerContent = generateGetByIdQueryHandler(entityName, basePackageName, domainMapperName);
+        Files.write(Paths.get(getByIdQueryDir.toString(), entityName + "GetByIdQueryHandler.java"), getByIdQueryHandlerContent.getBytes());
+        String getByIdResponseContent = generateGetByIdResponse(entityName, basePackageName, columns, tableName, detailedForeignKeys, aggregateRoots, columnToEnumMap);
+        Files.write(Paths.get(getByIdQueryDir.toString(), "GetById" + entityName + "Response.java"), getByIdResponseContent.getBytes());
     }
 
     private String generateCreateCommandHandler(String entityName, String basePackageName, String domainMapperName) {
@@ -2322,5 +2337,123 @@ public class Delete%sResponse {
 """,
             basePackageName, entityName.toLowerCase(), entityName
         );
+    }
+
+    private String generateGetByIdQueryHandler(String entityName, String basePackageName, String domainMapperName) {
+        String repositoryName = entityName + "Repository";
+        String domainEntityName = entityName + "DomainEntity";
+        String entityLower = entityName.toLowerCase();
+        String repositoryVar = firstCharToLowerCase(repositoryName);
+        String domainMapperVar = firstCharToLowerCase(domainMapperName);
+        String responseClassName = "GetById" + entityName + "Response";
+        String mappingMethod = entityLower + "DomainEntityToGetById" + entityName + "Response";
+        return String.format("""
+package %s.domain.applicationservice.queries.%s.getbyid;
+
+import %s.domain.applicationservice.ports.output.repository.%s;
+import %s.domain.applicationservice.mapper.%s;
+import %s.domain.core.entity.%s;
+import %s.domain.core.exception.DomainEntityNotFoundException;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import java.util.Optional;
+import java.util.UUID;
+
+@Slf4j
+@Component
+public class %sGetByIdQueryHandler {
+
+    private final %s %s;
+    private final %s %s;
+
+    public %sGetByIdQueryHandler(%s %s, %s %s) {
+        this.%s = %s;
+        this.%s = %s;
+    }
+
+    public %s getById(UUID id) {
+        Optional<%s> domainEntityOptional = %s.getById(id);
+        if (domainEntityOptional.isEmpty()) {
+            log.error("Could not find %s by id: {}", id);
+            throw new DomainEntityNotFoundException();
+        }
+        return %s.%s(domainEntityOptional.get());
+    }
+}
+""",
+        basePackageName, entityLower,
+        basePackageName, repositoryName,
+        basePackageName, domainMapperName,
+        basePackageName, domainEntityName,
+        basePackageName,
+        entityName, repositoryName, repositoryVar, domainMapperName, domainMapperVar,
+        entityName, repositoryName, repositoryVar, domainMapperName, domainMapperVar,
+        repositoryVar, repositoryVar, domainMapperVar, domainMapperVar,
+        responseClassName,
+        domainEntityName, repositoryVar,
+        entityLower,
+        domainMapperVar, mappingMethod
+    );
+    }
+
+    private String generateGetByIdResponse(String entityName, String basePackageName, List<Map<String, String>> columns, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap) {
+        StringBuilder fields = new StringBuilder();
+        Set<String> imports = new TreeSet<>();
+        imports.add("import lombok.AllArgsConstructor;");
+        imports.add("import lombok.Getter;");
+        imports.add("import java.util.UUID;");
+
+        Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(currentTable, new HashMap<>());
+
+        fields.append("    private final UUID id;\n\n");
+
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("name");
+            if (columnName.equals("id")) continue;
+
+            String camelCaseName = snakeCaseToCamelCase(columnName);
+            String fieldName;
+            if (JAVA_KEYWORDS.contains(camelCaseName)) {
+                fieldName = firstCharToLowerCase(entityName) + snakeKebabCaseToPascalCase(columnName);
+            } else {
+                fieldName = camelCaseName;
+            }
+
+            String fqnFieldType;
+            String columnIdentifier = currentTable + "." + columnName;
+
+            if (columnToEnumMap.containsKey(columnIdentifier)) {
+                fqnFieldType = columnToEnumMap.get(columnIdentifier);
+            } else if (tableForeignKeys.containsKey(columnName)) {
+                fqnFieldType = "java.util.UUID";
+            } else {
+                fqnFieldType = toJavaType(column.get("type"));
+            }
+
+            String simpleFieldType;
+            if (fqnFieldType.contains(".")) {
+                if (!fqnFieldType.startsWith("java.lang")) {
+                    imports.add("import " + fqnFieldType + ";");
+                }
+                simpleFieldType = fqnFieldType.substring(fqnFieldType.lastIndexOf('.') + 1);
+            } else {
+                simpleFieldType = fqnFieldType;
+            }
+            fields.append(String.format("    private final %s %s;\n\n", simpleFieldType, fieldName));
+        }
+        String importStatements = imports.stream().collect(Collectors.joining("\n"));
+
+        return String.format("""
+package %s.domain.applicationservice.queries.%s.getbyid;
+
+%s
+
+@Getter
+@AllArgsConstructor
+public class GetById%sResponse {
+
+%s}
+""",
+            basePackageName, entityName.toLowerCase(Locale.ENGLISH), importStatements, entityName, fields.toString());
     }
 }

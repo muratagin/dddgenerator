@@ -145,6 +145,13 @@ public class ProjectService {
         Files.writeString(Paths.get(domainCoreExceptionDir.toString(), "DomainEntityNotFoundException.java"), generateDomainEntityNotFoundExceptionContent(basePackageNameForClassGen));
         Files.writeString(Paths.get(domainCoreExceptionDir.toString(), "RepositoryOutputPortException.java"), generateRepositoryOutputPortExceptionContent(basePackageNameForClassGen));
 
+        Files.writeString(Paths.get(domainCoreMainJava.toString(), "DomainConstants.java"), generateDomainConstantsContent(basePackageNameForClassGen));
+
+        Path domainCorePayloadDir = Paths.get(domainCoreMainJava.toString(), "payload");
+        Files.createDirectories(domainCorePayloadDir);
+        Files.writeString(Paths.get(domainCorePayloadDir.toString(), "BaseQuery.java"), generateBaseQueryContent(basePackageNameForClassGen));
+        Files.writeString(Paths.get(domainCorePayloadDir.toString(), "BaseQueryResponse.java"), generateBaseQueryResponseContent(basePackageNameForClassGen));
+
         if (environmentalCredentialsRequest.getSelectedSchema() != null && !environmentalCredentialsRequest.getSelectedSchema().isEmpty()) {
             generateDomainClasses(environmentalCredentialsRequest, domainCoreMainJava, basePackageNameForClassGen);
         }
@@ -1588,6 +1595,21 @@ public class %s extends %s<%s> {
     ));
 
     private void generateApplicationServiceClasses(ProjectRequest projectRequest, EnvironmentalCredentialsRequest envRequest, Path appServiceMainJava, String basePackageName) throws IOException {
+        boolean useCrossCuttingLibrary = projectRequest.getCrossCuttingLibrary() != null;
+        if (!useCrossCuttingLibrary) {
+            Path queryBaseDir = Paths.get(appServiceMainJava.toString(), "queries", "base");
+            Files.createDirectories(queryBaseDir);
+
+            String domainConstantsContent = generateDomainConstantsContent(basePackageName);
+            Files.write(Paths.get(queryBaseDir.toString(), "DomainConstants.java"), domainConstantsContent.getBytes());
+
+            String baseQueryContent = generateBaseQueryContent(basePackageName);
+            Files.write(Paths.get(queryBaseDir.toString(), "BaseQuery.java"), baseQueryContent.getBytes());
+
+            String baseQueryResponseContent = generateBaseQueryResponseContent(basePackageName);
+            Files.write(Paths.get(queryBaseDir.toString(), "BaseQueryResponse.java"), baseQueryResponseContent.getBytes());
+        }
+
         String url = envRequest.getLocalDatasourceUrl();
         String username = envRequest.getLocalDatasourceUsername();
         String password = envRequest.getLocalDatasourcePassword();
@@ -2455,5 +2477,104 @@ public class GetById%sResponse {
 %s}
 """,
             basePackageName, entityName.toLowerCase(Locale.ENGLISH), importStatements, entityName, fields.toString());
+    }
+
+    private String generateDomainConstantsContent(String basePackageName) {
+        return String.format("""
+package %s.domain.core;
+
+import java.time.ZoneId;
+
+public class DomainConstants {
+
+    // Date Time Constants
+    public static final String UTC = "UTC";
+
+    // Pagination Constants
+    public static final int MIN_PAGE_NO = 0;
+    public static final int DEFAULT_PAGE_SIZE = 10;
+    public static final int MAX_PAGE_SIZE = 100;
+    public static final String DEFAULT_SORT_BY = "created_at";
+    public static final String DEFAULT_SORT_DIRECTION = "desc";
+}
+""", basePackageName);
+    }
+
+    private String generateBaseQueryContent(String basePackageName) {
+        return String.format("""
+package %s.domain.core.payload;
+
+import %s.domain.core.DomainConstants;
+
+import java.util.Objects;
+
+public class BaseQuery {
+
+    private Integer pageNo = DomainConstants.MIN_PAGE_NO;
+    private Integer pageSize = DomainConstants.DEFAULT_PAGE_SIZE;
+    private String sortBy = DomainConstants.DEFAULT_SORT_BY;
+    private String sortDirection = DomainConstants.DEFAULT_SORT_DIRECTION;
+
+    public BaseQuery(Integer pageNo, Integer pageSize, String sortBy, String sortDirection) {
+        this.pageNo = Objects.nonNull(pageNo) ? pageNo : this.pageNo;
+        this.pageSize = Objects.nonNull(pageSize)
+                ? (pageSize > DomainConstants.MAX_PAGE_SIZE
+                    ? DomainConstants.MAX_PAGE_SIZE
+                    : pageSize)
+                : this.pageSize;
+        this.sortBy = Objects.nonNull(sortBy) ? sortBy : this.sortBy;
+        this.sortDirection = Objects.nonNull(sortDirection) ? sortDirection : this.sortDirection;
+    }
+
+    public Integer getPageNo() {
+        return pageNo;
+    }
+
+    public void setPageNo(Integer pageNo) {
+        this.pageNo = pageNo;
+    }
+
+    public Integer getPageSize() {
+        return pageSize;
+    }
+
+    public void setPageSize(Integer pageSize) {
+        this.pageSize = pageSize;
+    }
+
+    public String getSortBy() {
+        return sortBy;
+    }
+
+    public void setSortBy(String sortBy) {
+        this.sortBy = sortBy;
+    }
+
+    public String getSortDirection() {
+        return sortDirection;
+    }
+
+    public void setSortDirection(String sortDirection) {
+        this.sortDirection = sortDirection;
+    }
+}
+""", basePackageName, basePackageName);
+    }
+
+    private String generateBaseQueryResponseContent(String basePackageName) {
+        return String.format("""
+package %s.domain.core.payload;
+
+import java.util.List;
+
+public record BaseQueryResponse<T>(
+        List<T> content,
+        int pageNo,
+        int pageSize,
+        long totalElements,
+        int totalPages,
+        boolean isLast) {
+ }
+""", basePackageName);
     }
 }

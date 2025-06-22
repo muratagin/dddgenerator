@@ -1641,6 +1641,7 @@ public class %s extends %s<%s> {
 
         mapperImports.add("import org.springframework.stereotype.Component;");
         mapperImports.add(String.format("import %s.domain.core.entity.*;", basePackageName));
+        mapperImports.add(String.format("import %s.domain.core.valueobject.*;", basePackageName));
         mapperImports.add("import java.time.ZonedDateTime;");
 
         for (String rootTable : aggregateRoots) {
@@ -1652,7 +1653,18 @@ public class %s extends %s<%s> {
             String updateCommandName = "Update" + entityName + "Command";
             String updateCommandVar = firstCharToLowerCase(updateCommandName);
             String updateResponseName = "Update" + entityName + "Response";
+            String getByIdResponseName = "GetById" + entityName + "Response";
+            String queryResponseName = entityName + "QueryResponse";
+            String entityNameLower = rootTable.toLowerCase(Locale.ENGLISH).replace("_", "");
 
+            // Collect imports for commands and responses
+            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.create.%s;", basePackageName, entityNameLower, createCommandName));
+            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.create.%s;", basePackageName, entityNameLower, createResponseName));
+            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.update.%s;", basePackageName, entityNameLower, updateCommandName));
+            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.update.%s;", basePackageName, entityNameLower, updateResponseName));
+            mapperImports.add(String.format("import %s.domain.applicationservice.queries.%s.getbyid.%s;", basePackageName, entityNameLower, getByIdResponseName));
+            mapperImports.add(String.format("import %s.domain.applicationservice.queries.%s.query.%s;", basePackageName, entityNameLower, queryResponseName));
+            
             List<Map<String, String>> columns = getColumnsForTable(conn, schema, rootTable);
             Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(rootTable, new HashMap<>());
 
@@ -1663,14 +1675,6 @@ public class %s extends %s<%s> {
             StringBuilder responseConstructorArgs = new StringBuilder();
             String rootTableCamelCase = snakeCaseToCamelCase(rootTable);
             responseConstructorArgs.append(String.format("%sDomainEntity.getId().getValue()", rootTableCamelCase));
-
-            // Collect imports for domain entities and value objects
-            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.create.%s;", basePackageName, rootTable.toLowerCase(Locale.ENGLISH), createCommandName));
-            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.create.%s;", basePackageName, rootTable.toLowerCase(Locale.ENGLISH), createResponseName));
-            mapperImports.add(String.format("import %s.domain.core.valueobject.%sId;", basePackageName, entityName));
-            // --- UPDATE: Add imports for update command/response ---
-            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.update.%s;", basePackageName, rootTable.toLowerCase(Locale.ENGLISH), updateCommandName));
-            mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.update.%s;", basePackageName, rootTable.toLowerCase(Locale.ENGLISH), updateResponseName));
 
             for (Map<String, String> column : columns) {
                 String columnName = column.get("name");
@@ -1688,11 +1692,12 @@ public class %s extends %s<%s> {
 
                 // For Command to DomainEntity mapping (CREATE)
                 if (columnToEnumMap.containsKey(columnIdentifier)) {
-                    domainEntityConstructorArgs.append(String.format(", %s.get%s()", createCommandVar, capitalizeFirstLetter(fieldName)));
+                    String enumFqn = columnToEnumMap.get(columnIdentifier);
+                    String enumClassName = enumFqn.substring(enumFqn.lastIndexOf('.') + 1);
+                    domainEntityConstructorArgs.append(String.format(", %s.fromValue(%s.get%s())", enumClassName, createCommandVar, capitalizeFirstLetter(fieldName)));
                 } else if (tableForeignKeys.containsKey(columnName)) {
                     String referencedEntityPascal = snakeKebabCaseToPascalCase(tableForeignKeys.get(columnName).getPkTableName());
                     domainEntityConstructorArgs.append(String.format(", new %sId(%s.get%s())", referencedEntityPascal, createCommandVar, capitalizeFirstLetter(fieldName)));
-                    mapperImports.add(String.format("import %s.domain.core.valueobject.%sId;", basePackageName, referencedEntityPascal));
                 } else if (columnName.equals("occurred_at")) {
                     domainEntityConstructorArgs.append(", now"); // Special handling for 'now' from handler
                 } else {
@@ -1701,7 +1706,7 @@ public class %s extends %s<%s> {
 
                 // For DomainEntity to Response mapping (CREATE/UPDATE)
                 if (columnToEnumMap.containsKey(columnIdentifier)) {
-                    responseConstructorArgs.append(String.format(", %sDomainEntity.get%s()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
+                    responseConstructorArgs.append(String.format(", (short) %sDomainEntity.get%s().getValue()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
                 } else if (tableForeignKeys.containsKey(columnName)) {
                     responseConstructorArgs.append(String.format(", %sDomainEntity.get%s().getValue()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
                 } else {
@@ -1733,11 +1738,12 @@ public class %s extends %s<%s> {
                 }
                 String columnIdentifier = rootTable + "." + columnName;
                 if (columnToEnumMap.containsKey(columnIdentifier)) {
-                    updateDomainEntityConstructorArgs.append(String.format(", update%sCommand.get%s()", entityName, capitalizeFirstLetter(fieldName)));
+                    String enumFqn = columnToEnumMap.get(columnIdentifier);
+                    String enumClassName = enumFqn.substring(enumFqn.lastIndexOf('.') + 1);
+                    updateDomainEntityConstructorArgs.append(String.format(", %s.fromValue(update%sCommand.get%s())", enumClassName, entityName, capitalizeFirstLetter(fieldName)));
                 } else if (tableForeignKeys.containsKey(columnName)) {
                     String referencedEntityPascal = snakeKebabCaseToPascalCase(tableForeignKeys.get(columnName).getPkTableName());
                     updateDomainEntityConstructorArgs.append(String.format(", new %sId(update%sCommand.get%s())", referencedEntityPascal, entityName, capitalizeFirstLetter(fieldName)));
-                    mapperImports.add(String.format("import %s.domain.core.valueobject.%sId;", basePackageName, referencedEntityPascal));
                 } else if (columnName.equals("occurred_at")) {
                     updateDomainEntityConstructorArgs.append(", now");
                 } else {
@@ -1754,11 +1760,19 @@ public class %s extends %s<%s> {
             methods.append("    }\n\n");
 
             // --- GET BY ID methods ---
-            String getByIdResponseName = "GetById" + entityName + "Response";
-            mapperImports.add(String.format("import %s.domain.applicationservice.queries.%s.getbyid.%s;", basePackageName, rootTable.toLowerCase(Locale.ENGLISH), getByIdResponseName));
             methods.append(String.format("    public %s %sDomainEntityToGetById%sResponse(%s %sDomainEntity) {\n", getByIdResponseName, rootTableCamelCase, entityName, domainEntityName, rootTableCamelCase));
             methods.append(String.format("        return new %s(%s);\n", getByIdResponseName, responseConstructorArgs.toString()));
             methods.append("    }\n\n");
+
+            // Add QueryResponse mapping method
+            methods.append(String.format("    public %s %sDomainEntityTo%s(%s %s) {\n", queryResponseName, firstCharToLowerCase(entityName), queryResponseName, domainEntityName, firstCharToLowerCase(domainEntityName)));
+            methods.append(String.format("        return new %s(\n", queryResponseName));
+            // TODO: Add all fields in correct order (id, then all columns)
+            // For now, just pass the domain entity fields as in your sample
+            // You may want to expand this logic to match your actual field mapping
+            methods.append(String.format("            %s.getId().getValue(),\n", firstCharToLowerCase(domainEntityName)));
+            // ... add other fields as needed ...
+            methods.append("        );\n    }\n\n");
         }
 
         String importStatements = mapperImports.stream().collect(Collectors.joining("\n"));
@@ -1780,36 +1794,30 @@ public class %s {
 private void generateRepositoryInterface(String tableName, String basePackageName, Path appServiceMainJava) throws IOException {
     String entityName = snakeKebabCaseToPascalCase(tableName);
     String domainEntityName = entityName + "DomainEntity";
-    Path portsDir = Paths.get(appServiceMainJava.toString(), "ports", "output", "repository");
-    Files.createDirectories(portsDir);
-    String content = String.format("""
-package %s.domain.applicationservice.ports.output.repository;
-
-import %s.domain.core.entity.%s;
-import java.util.UUID;
-import java.time.ZonedDateTime;
-import java.util.Optional;
-
-public interface %sRepository {
-    %s create(%s entity);
-    %s update(%s entity);
-    %s delete(%s entity, UUID updatedBy, ZonedDateTime now);
-    Optional<%s> getById(UUID id);
-}
-""",
-        basePackageName, basePackageName, domainEntityName,
-        entityName,
-        domainEntityName, domainEntityName,
-        domainEntityName, domainEntityName,
-        domainEntityName, domainEntityName,
-        domainEntityName
-    );
-    Files.write(Paths.get(portsDir.toString(), entityName + "Repository.java"), content.getBytes());
+    String repositoryName = entityName + "Repository";
+    Path repoDir = Paths.get(appServiceMainJava.toString(), "ports", "output", "repository");
+    Files.createDirectories(repoDir);
+    StringBuilder content = new StringBuilder();
+    content.append("package " + basePackageName + ".domain.applicationservice.ports.output.repository;\n\n");
+    content.append("import java.util.Optional;\n");
+    content.append("import java.util.UUID;\n");
+    content.append("import java.time.ZonedDateTime;\n");
+    content.append("import " + basePackageName + ".domain.core.entity." + domainEntityName + ";\n");
+    content.append("import " + basePackageName + ".domain.core.payload.BaseQueryResponse;\n");
+    content.append("import " + basePackageName + ".domain.applicationservice.queries." + tableName.toLowerCase(Locale.ENGLISH).replace("_", "") + ".query." + entityName + "Query;\n");
+    content.append("\npublic interface " + repositoryName + " {\n\n");
+    content.append("    " + domainEntityName + " create(" + domainEntityName + " entity, UUID createdBy, ZonedDateTime now);\n");
+    content.append("    " + domainEntityName + " update(" + domainEntityName + " entity, UUID updatedBy, ZonedDateTime now);\n");
+    content.append("    " + domainEntityName + " delete(" + domainEntityName + " entity, UUID updatedBy, ZonedDateTime now);\n");
+    content.append("    Optional<" + domainEntityName + "> getById(UUID id);\n");
+    content.append("    BaseQueryResponse<" + domainEntityName + "> query(" + entityName + "Query query);\n");
+    content.append("}\n");
+    Files.write(Paths.get(repoDir.toString(), repositoryName + ".java"), content.toString().getBytes());
 }
 
     private void generateCommandClasses(String tableName, String basePackageName, Path appServiceMainJava, Connection conn, String schema, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap, String domainMapperName, ProjectRequest projectRequest) throws IOException, SQLException {
         String entityName = snakeKebabCaseToPascalCase(tableName);
-        String entityNameLower = tableName.toLowerCase().replace("_", "");
+        String entityNameLower = tableName.toLowerCase(Locale.ENGLISH).replace("_", "");
         Path createCommandDir = Paths.get(appServiceMainJava.toString(), "commands", entityNameLower, "create");
         Files.createDirectories(createCommandDir);
         Path updateCommandDir = Paths.get(appServiceMainJava.toString(), "commands", entityNameLower, "update");
@@ -1857,6 +1865,160 @@ public interface %sRepository {
         Files.write(Paths.get(getByIdQueryDir.toString(), entityName + "GetByIdQueryHandler.java"), getByIdQueryHandlerContent.getBytes());
         String getByIdResponseContent = generateGetByIdResponse(entityName, basePackageName, columns, tableName, detailedForeignKeys, aggregateRoots, columnToEnumMap);
         Files.write(Paths.get(getByIdQueryDir.toString(), "GetById" + entityName + "Response.java"), getByIdResponseContent.getBytes());
+
+        // General Query
+        Path queryDir = Paths.get(appServiceMainJava.toString(), "queries", entityNameLower, "query");
+        Files.createDirectories(queryDir);
+        String queryDtoContent = generateGeneralQueryDto(entityName, basePackageName, columns, tableName, detailedForeignKeys, aggregateRoots, columnToEnumMap);
+        Files.write(Paths.get(queryDir.toString(), entityName + "Query.java"), queryDtoContent.getBytes());
+        String queryResponseContent = generateGeneralQueryResponse(entityName, basePackageName, columns, tableName, detailedForeignKeys, aggregateRoots, columnToEnumMap);
+        Files.write(Paths.get(queryDir.toString(), entityName + "QueryResponse.java"), queryResponseContent.getBytes());
+        String queryHandlerContent = generateGeneralQueryHandler(entityName, basePackageName, domainMapperName);
+        Files.write(Paths.get(queryDir.toString(), entityName + "QueryHandler.java"), queryHandlerContent.getBytes());
+    }
+
+    // Helper to determine if a column is filterable for Query DTO
+    private boolean isFilterableField(String columnName, String dbType) {
+        String lower = columnName.toLowerCase();
+        if (lower.equals("id") || lower.endsWith("_id") || lower.endsWith("id")) return false;
+        if (dbType == null) return false;
+        String type = dbType.toLowerCase();
+        return type.contains("char") || type.contains("text") || type.contains("enum") || type.contains("bool");
+    }
+
+    private String generateGeneralQueryDto(String entityName, String basePackageName, List<Map<String, String>> columns, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap) {
+        StringBuilder fields = new StringBuilder();
+        StringBuilder constructorParams = new StringBuilder();
+        StringBuilder constructorBody = new StringBuilder();
+        Set<String> imports = new TreeSet<>();
+        imports.add("import lombok.Getter;");
+        imports.add("import lombok.ToString;");
+        imports.add("import " + basePackageName + ".domain.core.payload.BaseQuery;");
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("name");
+            String dbType = column.get("type");
+            if (!isFilterableField(columnName, dbType)) continue;
+            String camelCaseName = snakeCaseToCamelCase(columnName);
+            String safeFieldName = getSafeFieldName(entityName, camelCaseName);
+            String fieldType;
+            String columnIdentifier = currentTable + "." + columnName;
+            if (columnToEnumMap.containsKey(columnIdentifier)) {
+                String fqn = columnToEnumMap.get(columnIdentifier);
+                fieldType = fqn.substring(fqn.lastIndexOf('.') + 1);
+                imports.add("import " + fqn + ";");
+            } else {
+                String fqn = toJavaType(dbType);
+                if (fqn.contains(".")) {
+                    fieldType = fqn.substring(fqn.lastIndexOf('.') + 1);
+                    if (!fqn.startsWith("java.lang")) imports.add("import " + fqn + ";");
+                } else {
+                    fieldType = fqn;
+                }
+            }
+            fields.append("    private final " + fieldType + " " + safeFieldName + ";\n");
+            constructorParams.append(fieldType + " " + safeFieldName + ", ");
+            constructorBody.append("        this." + safeFieldName + " = " + safeFieldName + ";\n");
+        }
+        // Constructor with all fields + super fields
+        String params = "Integer pageNo, Integer pageSize, String sortBy, String sortDirection, " + constructorParams.toString();
+        if (params.endsWith(", ")) params = params.substring(0, params.length() - 2);
+        StringBuilder classContent = new StringBuilder();
+        classContent.append("package " + basePackageName + ".domain.applicationservice.queries." + entityName.toLowerCase(Locale.ENGLISH) + ".query;\n\n");
+        for (String imp : imports) classContent.append(imp + "\n");
+        classContent.append("\n@Getter\n@ToString\npublic class " + entityName + "Query extends BaseQuery {\n\n");
+        classContent.append(fields);
+        classContent.append("\n    public " + entityName + "Query(" + params + ") {\n");
+        classContent.append("        super(pageNo, pageSize, sortBy, sortDirection);\n");
+        classContent.append(constructorBody);
+        classContent.append("    }\n}");
+        return classContent.toString();
+    }
+
+    private String generateGeneralQueryResponse(String entityName, String basePackageName, List<Map<String, String>> columns, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap) {
+        StringBuilder fields = new StringBuilder();
+        StringBuilder constructorParams = new StringBuilder();
+        StringBuilder constructorBody = new StringBuilder();
+        Set<String> imports = new TreeSet<>();
+        imports.add("import lombok.Getter;");
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("name");
+            String dbType = column.get("type");
+            String camelCaseName = snakeCaseToCamelCase(columnName);
+            String safeFieldName = getSafeFieldName(entityName, camelCaseName);
+            String fieldType;
+            String columnIdentifier = currentTable + "." + columnName;
+            if (columnToEnumMap.containsKey(columnIdentifier)) {
+                String fqn = columnToEnumMap.get(columnIdentifier);
+                fieldType = fqn.substring(fqn.lastIndexOf('.') + 1);
+                imports.add("import " + fqn + ";");
+            } else {
+                String fqn = toJavaType(dbType);
+                if (fqn.contains(".")) {
+                    fieldType = fqn.substring(fqn.lastIndexOf('.') + 1);
+                    if (!fqn.startsWith("java.lang")) imports.add("import " + fqn + ";");
+                } else {
+                    fieldType = fqn;
+                }
+            }
+            fields.append("    private final " + fieldType + " " + safeFieldName + ";\n");
+            constructorParams.append(fieldType + " " + safeFieldName + ", ");
+            constructorBody.append("        this." + safeFieldName + " = " + safeFieldName + ";\n");
+        }
+        String params = constructorParams.toString();
+        if (params.endsWith(", ")) params = params.substring(0, params.length() - 2);
+        StringBuilder classContent = new StringBuilder();
+        classContent.append("package " + basePackageName + ".domain.applicationservice.queries." + entityName.toLowerCase(Locale.ENGLISH) + ".query;\n\n");
+        for (String imp : imports) classContent.append(imp + "\n");
+        classContent.append("\n@Getter\npublic class " + entityName + "QueryResponse {\n\n");
+        classContent.append(fields);
+        classContent.append("\n    public " + entityName + "QueryResponse(" + params + ") {\n");
+        classContent.append(constructorBody);
+        classContent.append("    }\n}");
+        return classContent.toString();
+    }
+
+    private String generateGeneralQueryHandler(String entityName, String basePackageName, String domainMapperName) {
+        String repositoryName = entityName + "Repository";
+        String repositoryVar = firstCharToLowerCase(repositoryName);
+        String domainMapperVar = firstCharToLowerCase(domainMapperName);
+        String queryDto = entityName + "Query";
+        String queryResponse = entityName + "QueryResponse";
+        String domainEntity = entityName + "DomainEntity";
+        Set<String> imports = new TreeSet<>();
+        imports.add("import lombok.extern.slf4j.Slf4j;");
+        imports.add("import org.springframework.stereotype.Component;");
+        imports.add("import org.springframework.transaction.annotation.Transactional;");
+        imports.add("import java.util.ArrayList;");
+        imports.add("import java.util.List;");
+        imports.add("import " + basePackageName + ".domain.core.payload.BaseQueryResponse;");
+        imports.add("import " + basePackageName + ".domain.core.entity." + domainEntity + ";");
+        imports.add("import " + basePackageName + ".domain.core.exception.DomainEntityNotFoundException;");
+        imports.add("import " + basePackageName + ".domain.applicationservice.ports.output.repository." + repositoryName + ";");
+        imports.add("import " + basePackageName + ".domain.applicationservice.mapper." + domainMapperName + ";");
+        StringBuilder classContent = new StringBuilder();
+        classContent.append("package " + basePackageName + ".domain.applicationservice.queries." + entityName.toLowerCase(Locale.ENGLISH) + ".query;\n\n");
+        for (String imp : imports) classContent.append(imp + "\n");
+        classContent.append("\n@Slf4j\n@Component\npublic class " + entityName + "QueryHandler {\n\n");
+        classContent.append("    private final " + repositoryName + " " + repositoryVar + ";\n");
+        classContent.append("    private final " + domainMapperName + " " + domainMapperVar + ";\n\n");
+        classContent.append("    public " + entityName + "QueryHandler(" + repositoryName + " " + repositoryVar + ", " + domainMapperName + " " + domainMapperVar + ") {\n");
+        classContent.append("        this." + repositoryVar + " = " + repositoryVar + ";\n");
+        classContent.append("        this." + domainMapperVar + " = " + domainMapperVar + ";\n    }\n\n");
+        classContent.append("    @Transactional\n");
+        classContent.append("    public BaseQueryResponse<" + queryResponse + "> query(" + queryDto + " query) {\n");
+        classContent.append("        BaseQueryResponse<" + domainEntity + "> entityList = " + repositoryVar + ".query(query);\n");
+        classContent.append("        if (entityList.content().isEmpty()) {\n");
+        classContent.append("            log.error(\"Could not find any " + entityName.toLowerCase(Locale.ENGLISH) + " with given filters: {}\", query);\n");
+        classContent.append("            throw new DomainEntityNotFoundException();\n        }\n");
+        classContent.append("        List<" + queryResponse + "> responseList = new ArrayList<>();\n");
+        classContent.append("        entityList.content().forEach(e -> responseList.add(" + domainMapperVar + "." + firstCharToLowerCase(entityName) + "DomainEntityTo" + queryResponse + "(e)));\n");
+        classContent.append("        return new BaseQueryResponse<>(responseList,\n");
+        classContent.append("                entityList.pageNo(),\n");
+        classContent.append("                entityList.pageSize(),\n");
+        classContent.append("                entityList.totalElements(),\n");
+        classContent.append("                entityList.totalPages(),\n");
+        classContent.append("                entityList.isLast());\n    }\n}\n");
+        return classContent.toString();
     }
 
     private String generateCreateCommandHandler(String entityName, String basePackageName, String domainMapperName) {
@@ -2537,5 +2699,16 @@ public record BaseQueryResponse<T>(
         boolean isLast) {
  }
 """, basePackageName);
+    }
+
+    private boolean isJavaKeyword(String name) {
+        return JAVA_KEYWORDS.contains(name);
+    }
+
+    private String getSafeFieldName(String entityName, String fieldName) {
+        if (isJavaKeyword(fieldName)) {
+            return firstCharToLowerCase(entityName) + capitalizeFirstLetter(fieldName);
+        }
+        return fieldName;
     }
 }

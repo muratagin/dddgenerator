@@ -196,7 +196,15 @@ public class ProjectService {
             Path persistenceEntityDir = Paths.get(persistenceMainJava.toString(), "entity");
             Files.createDirectories(persistenceEntityDir);
             Files.writeString(Paths.get(persistenceEntityDir.toString(), "BaseEntity.java"), generateDefaultBaseEntityContent(basePackageNameForClassGen));
-        } else {
+        }
+        
+        // Generate persistence layer implementation if database details are provided
+        if (environmentalCredentialsRequest.getLocalDatasourceUrl() != null && 
+            !environmentalCredentialsRequest.getLocalDatasourceUrl().isBlank() &&
+            environmentalCredentialsRequest.getSelectedSchema() != null &&
+            !environmentalCredentialsRequest.getSelectedSchema().isBlank()) {
+            generatePersistenceImplementation(projectRequest, environmentalCredentialsRequest, persistenceMainJava, basePackageNameForClassGen, useCrossCuttingLibrary);
+        } else if (useCrossCuttingLibrary) {
             Files.createFile(Paths.get(persistenceMainJava.toString(), ".gitkeep"));
         }
 
@@ -1572,6 +1580,7 @@ public class %s extends %s<%s> {
             case "timestamp without time zone":
             case "timestamp":
                 return "java.time.LocalDateTime";
+            case "timestamptz":
             case "timestamp with time zone":
                 return "java.time.ZonedDateTime";
             case "date":
@@ -2747,5 +2756,494 @@ public record BaseQueryResponse<T>(
             return firstCharToLowerCase(entityName) + capitalizeFirstLetter(fieldName);
         }
         return fieldName;
+    }
+
+    private void generatePersistenceImplementation(ProjectRequest projectRequest, EnvironmentalCredentialsRequest envRequest, Path persistenceMainJava, String basePackageName, boolean useCrossCuttingLibrary) throws IOException {
+        try (Connection conn = DriverManager.getConnection(envRequest.getLocalDatasourceUrl(), envRequest.getLocalDatasourceUsername(), envRequest.getLocalDatasourcePassword())) {
+            String schema = envRequest.getSelectedSchema();
+            List<String> tables = getTables(conn, schema);
+            Map<String, Set<String>> foreignKeys = getForeignKeys(conn, schema);
+            Set<String> aggregateRoots = determineAggregateRootsFromUserSelection(envRequest.getTableEntityTypes());
+            Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, schema);
+            
+            // Create persistence package structure
+            Path entityDir = Paths.get(persistenceMainJava.toString(), "entity");
+            Path repositoryDir = Paths.get(persistenceMainJava.toString(), "repository");
+            Path adapterDir = Paths.get(persistenceMainJava.toString(), "adapter");
+            Path mapperDir = Paths.get(persistenceMainJava.toString(), "mapper");
+            
+            Files.createDirectories(entityDir);
+            Files.createDirectories(repositoryDir);
+            Files.createDirectories(adapterDir);
+            Files.createDirectories(mapperDir);
+            
+            // Generate JPA entities for all tables
+            generateJpaEntities(tables, conn, schema, entityDir, basePackageName, detailedForeignKeys, useCrossCuttingLibrary);
+            
+            // Generate JPA repository interfaces for aggregate roots
+            generateJpaRepositoryInterfaces(aggregateRoots, repositoryDir, basePackageName);
+            
+            // Generate repository adapter implementations for aggregate roots
+            generateRepositoryAdapters(aggregateRoots, adapterDir, basePackageName, projectRequest.getArtifactId(), conn, schema);
+            
+            // Generate persistence mapper
+            Map<String, String> columnToEnumMap = new HashMap<>();
+            for (String table : tables) {
+                List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
+                for (Map<String, String> column : columns) {
+                    String comment = column.get("comment");
+                    if (comment != null && !comment.isBlank()) {
+                        String enumFqn = generateEnumIfApplicable(comment, column.get("name"), basePackageName, Paths.get("dummy"));
+                        if (enumFqn != null) {
+                            columnToEnumMap.put(table + "." + column.get("name"), enumFqn);
+                        }
+                    }
+                }
+            }
+            generatePersistenceMapper(tables, mapperDir, basePackageName, conn, schema, detailedForeignKeys, projectRequest.getArtifactId(), columnToEnumMap);
+            
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to generate persistence implementation", e);
+        }
+    }
+
+    private void generateJpaEntities(List<String> tables, Connection conn, String schema, Path entityDir, String basePackageName, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, boolean useCrossCuttingLibrary) throws SQLException, IOException {
+        for (String table : tables) {
+            String entityName = snakeKebabCaseToPascalCase(table);
+            String jpaEntityContent = generateJpaEntityContent(table, basePackageName, conn, schema, detailedForeignKeys, useCrossCuttingLibrary);
+            Files.writeString(Paths.get(entityDir.toString(), entityName + "Entity.java"), jpaEntityContent);
+        }
+    }
+
+    private void generateJpaRepositoryInterfaces(Set<String> aggregateRoots, Path repositoryDir, String basePackageName) throws IOException {
+        for (String aggregateRoot : aggregateRoots) {
+            String entityName = snakeKebabCaseToPascalCase(aggregateRoot);
+            String jpaRepoContent = generateJpaRepositoryContent(entityName, basePackageName);
+            Files.writeString(Paths.get(repositoryDir.toString(), entityName + "JpaRepository.java"), jpaRepoContent);
+        }
+    }
+
+    private void generateRepositoryAdapters(Set<String> aggregateRoots, Path adapterDir, String basePackageName, String projectArtifactId, Connection conn, String schema) throws IOException, SQLException {
+        for (String aggregateRoot : aggregateRoots) {
+            String entityName = snakeKebabCaseToPascalCase(aggregateRoot);
+            List<Map<String, String>> columns = getColumnsForTable(conn, schema, aggregateRoot);
+            String adapterContent = generateRepositoryAdapterContent(entityName, basePackageName, projectArtifactId, columns);
+            Files.writeString(Paths.get(adapterDir.toString(), entityName + "RepositoryImpl.java"), adapterContent);
+        }
+    }
+
+    private void generatePersistenceMapper(List<String> tables, Path mapperDir, String basePackageName, Connection conn, String schema, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, String projectArtifactId, Map<String, String> columnToEnumMap) throws IOException, SQLException {
+        String mapperContent = generatePersistenceMapperContent(tables, basePackageName, conn, schema, detailedForeignKeys, projectArtifactId, columnToEnumMap);
+        String mapperName = snakeKebabCaseToPascalCase(projectArtifactId) + "PersistenceMapper";
+        Files.writeString(Paths.get(mapperDir.toString(), mapperName + ".java"), mapperContent);
+    }
+
+    private String generateJpaEntityContent(String tableName, String basePackageName, Connection conn, String schema, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, boolean useCrossCuttingLibrary) throws SQLException {
+        String entityName = snakeKebabCaseToPascalCase(tableName);
+        List<Map<String, String>> columns = getColumnsForTable(conn, schema, tableName);
+        Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(tableName, new HashMap<>());
+        
+        StringBuilder fields = new StringBuilder();
+        StringBuilder getters = new StringBuilder();
+        StringBuilder setters = new StringBuilder();
+        Set<String> imports = new TreeSet<>();
+        
+        imports.add("import jakarta.persistence.*;");
+        imports.add("import java.util.UUID;");
+        
+        String extendsClass = useCrossCuttingLibrary ? "" : " extends BaseEntity";
+        // Note: BaseEntity import not needed as it's in the same package
+        
+        // Check if table has an id column
+        boolean hasIdColumn = columns.stream().anyMatch(col -> "id".equals(col.get("name")));
+        
+        // Add ID field if not present in database (common for junction tables)
+        if (!hasIdColumn) {
+            fields.append("    @Id\n");
+            fields.append("    @Column(name = \"id\")\n");
+            fields.append("    private UUID id;\n\n");
+            
+            getters.append("    public UUID getId() {\n");
+            getters.append("        return id;\n");
+            getters.append("    }\n\n");
+            
+            setters.append("    public void setId(UUID id) {\n");
+            setters.append("        this.id = id;\n");
+            setters.append("    }\n\n");
+        }
+        
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("name");
+            String camelCaseName = snakeCaseToCamelCase(columnName);
+            String fieldName;
+            if (JAVA_KEYWORDS.contains(camelCaseName)) {
+                fieldName = firstCharToLowerCase(entityName) + capitalizeFirstLetter(camelCaseName);
+            } else {
+                fieldName = camelCaseName;
+            }
+            String javaType;
+            
+            if (tableForeignKeys.containsKey(columnName)) {
+                javaType = "UUID";
+            } else {
+                String dbType = column.get("type");
+                javaType = toJavaType(dbType);
+                if (javaType.contains(".")) {
+                    if (!javaType.startsWith("java.lang")) {
+                        imports.add("import " + javaType + ";");
+                    }
+                    javaType = javaType.substring(javaType.lastIndexOf('.') + 1);
+                }
+            }
+            
+            // Generate field
+            if (columnName.equals("id")) {
+                fields.append("    @Id\n");
+                fields.append("    @Column(name = \"id\")\n");
+            } else {
+                fields.append("    @Column(name = \"" + columnName + "\")\n");
+            }
+            fields.append("    private " + javaType + " " + fieldName + ";\n\n");
+            
+            // Generate getter
+            getters.append("    public " + javaType + " get" + capitalizeFirstLetter(fieldName) + "() {\n");
+            getters.append("        return " + fieldName + ";\n");
+            getters.append("    }\n\n");
+            
+            // Generate setter  
+            setters.append("    public void set" + capitalizeFirstLetter(fieldName) + "(" + javaType + " " + fieldName + ") {\n");
+            setters.append("        this." + fieldName + " = " + fieldName + ";\n");
+            setters.append("    }\n\n");
+        }
+        
+        StringBuilder importStatements = new StringBuilder();
+        for (String imp : imports) {
+            importStatements.append(imp + "\n");
+        }
+        
+        // Generate @Table annotation with schema if provided and not default
+        String tableAnnotation;
+        if (schema != null && !schema.isEmpty() && !schema.equals("public")) {
+            tableAnnotation = String.format("@Table(schema = \"%s\", name = \"%s\")", schema, tableName);
+        } else {
+            tableAnnotation = String.format("@Table(name = \"%s\")", tableName);
+        }
+        
+        return String.format("""
+package %s.infrastructure.persistence.entity;
+
+%s
+@Entity
+%s
+public class %sEntity%s {
+
+%s%s%s}
+""", basePackageName, importStatements.toString(), tableAnnotation, entityName, extendsClass, fields.toString(), getters.toString(), setters.toString());
+    }
+
+    private String generateJpaRepositoryContent(String entityName, String basePackageName) {
+        return String.format("""
+package %s.infrastructure.persistence.repository;
+
+import %s.infrastructure.persistence.entity.%sEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+import java.util.UUID;
+
+@Repository
+public interface %sJpaRepository extends JpaRepository<%sEntity, UUID> {
+}
+""", basePackageName, basePackageName, entityName, entityName, entityName);
+    }
+
+    private String generateRepositoryAdapterContent(String entityName, String basePackageName, String projectArtifactId, List<Map<String, String>> columns) {
+        String repositoryName = entityName + "Repository";
+        String jpaRepositoryName = entityName + "JpaRepository";
+        String domainEntityName = entityName + "DomainEntity";
+        String jpaEntityName = entityName + "Entity";
+        String queryClass = entityName + "Query";
+        String queryClassLower = entityName.toLowerCase(Locale.ENGLISH).replace("_", "");
+        String jpaRepoVar = firstCharToLowerCase(jpaRepositoryName);
+        String entityVar = firstCharToLowerCase(entityName);
+        String mapperClassName = snakeKebabCaseToPascalCase(projectArtifactId) + "PersistenceMapper";
+        String mapperVar = firstCharToLowerCase(mapperClassName);
+        
+        // Check which audit columns exist in the table
+        Set<String> columnNames = columns.stream()
+            .map(col -> col.get("name"))
+            .collect(java.util.stream.Collectors.toSet());
+        
+        boolean hasCreatedBy = columnNames.contains("created_by");
+        boolean hasCreatedAt = columnNames.contains("created_at");
+        boolean hasUpdatedBy = columnNames.contains("updated_by");
+        boolean hasUpdatedAt = columnNames.contains("updated_at");
+        boolean hasDeleted = columnNames.contains("is_deleted");
+        
+        // Check column types for date fields to determine conversion
+        String createdAtType = null;
+        String updatedAtType = null;
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("name");
+            if ("created_at".equals(columnName)) {
+                createdAtType = column.get("type");
+            } else if ("updated_at".equals(columnName)) {
+                updatedAtType = column.get("type");
+            }
+        }
+        
+        boolean createdAtNeedsConversion = createdAtType != null && 
+            (createdAtType.toLowerCase().contains("timestamp")
+                    && !(createdAtType.toLowerCase().contains("with time zone") || createdAtType.toLowerCase().contains("timestamptz")));
+        boolean updatedAtNeedsConversion = updatedAtType != null && 
+            (updatedAtType.toLowerCase().contains("timestamp")
+                    && !(updatedAtType.toLowerCase().contains("with time zone") || updatedAtType.toLowerCase().contains("timestamptz")));
+        
+        StringBuilder content = new StringBuilder();
+        content.append("package ").append(basePackageName).append(".infrastructure.persistence.adapter;\n\n");
+        content.append("import ").append(basePackageName).append(".domain.applicationservice.ports.output.repository.").append(repositoryName).append(";\n");
+        content.append("import ").append(basePackageName).append(".domain.core.entity.").append(domainEntityName).append(";\n");
+        content.append("import ").append(basePackageName).append(".domain.core.payload.BaseQueryResponse;\n");
+        content.append("import ").append(basePackageName).append(".domain.applicationservice.queries.").append(queryClassLower).append(".query.").append(queryClass).append(";\n");
+        content.append("import ").append(basePackageName).append(".infrastructure.persistence.entity.").append(jpaEntityName).append(";\n");
+        content.append("import ").append(basePackageName).append(".infrastructure.persistence.repository.").append(jpaRepositoryName).append(";\n");
+        content.append("import ").append(basePackageName).append(".infrastructure.persistence.mapper.").append(mapperClassName).append(";\n");
+        content.append("import org.springframework.stereotype.Component;\n");
+        content.append("import org.springframework.transaction.annotation.Transactional;\n");
+        content.append("import java.time.ZonedDateTime;\n");
+        if (createdAtNeedsConversion || updatedAtNeedsConversion) {
+            content.append("import java.time.LocalDateTime;\n");
+        }
+        content.append("import java.util.List;\n");
+        content.append("import java.util.Optional;\n");
+        content.append("import java.util.UUID;\n");
+        content.append("import java.util.stream.Collectors;\n\n");
+        
+        content.append("@Component\n");
+        content.append("public class ").append(entityName).append("RepositoryImpl implements ").append(repositoryName).append(" {\n\n");
+        
+        content.append("    private final ").append(jpaRepositoryName).append(" ").append(jpaRepoVar).append(";\n");
+        content.append("    private final ").append(mapperClassName).append(" ").append(mapperVar).append(";\n\n");
+        
+        content.append("    public ").append(entityName).append("RepositoryImpl(").append(jpaRepositoryName).append(" ").append(jpaRepoVar).append(", ").append(mapperClassName).append(" ").append(mapperVar).append(") {\n");
+        content.append("        this.").append(jpaRepoVar).append(" = ").append(jpaRepoVar).append(";\n");
+        content.append("        this.").append(mapperVar).append(" = ").append(mapperVar).append(";\n");
+        content.append("    }\n\n");
+        
+        // Create method
+        content.append("    @Override\n    @Transactional\n");
+        content.append("    public ").append(domainEntityName).append(" create(").append(domainEntityName).append(" domainEntity, UUID createdBy, ZonedDateTime now) {\n");
+        content.append("        ").append(jpaEntityName).append(" entity = ").append(mapperVar).append(".").append(firstCharToLowerCase(domainEntityName)).append("To").append(jpaEntityName).append("(domainEntity);\n");
+        if (hasCreatedBy) {
+            content.append("        entity.setCreatedBy(createdBy);\n");
+        }
+        if (hasCreatedAt) {
+            if (createdAtNeedsConversion) {
+                content.append("        entity.setCreatedAt(LocalDateTime.from(now));\n");
+            } else {
+                content.append("        entity.setCreatedAt(now);\n");
+            }
+        }
+        if (hasUpdatedBy) {
+            content.append("        entity.setUpdatedBy(createdBy);\n");
+        }
+        if (hasUpdatedAt) {
+            if (updatedAtNeedsConversion) {
+                content.append("        entity.setUpdatedAt(LocalDateTime.from(now));\n");
+            } else {
+                content.append("        entity.setUpdatedAt(now);\n");
+            }
+        }
+        content.append("        ").append(jpaEntityName).append(" saved = ").append(jpaRepoVar).append(".save(entity);\n");
+        content.append("        return ").append(mapperVar).append(".").append(firstCharToLowerCase(jpaEntityName)).append("To").append(domainEntityName).append("(saved);\n");
+        content.append("    }\n\n");
+        
+        // Update method  
+        content.append("    @Override\n    @Transactional\n");
+        content.append("    public ").append(domainEntityName).append(" update(").append(domainEntityName).append(" domainEntity, UUID updatedBy, ZonedDateTime now) {\n");
+        content.append("        ").append(jpaEntityName).append(" entity = ").append(mapperVar).append(".").append(firstCharToLowerCase(domainEntityName)).append("To").append(jpaEntityName).append("(domainEntity);\n");
+        if (hasUpdatedBy) {
+            content.append("        entity.setUpdatedBy(updatedBy);\n");
+        }
+        if (hasUpdatedAt) {
+            if (updatedAtNeedsConversion) {
+                content.append("        entity.setUpdatedAt(LocalDateTime.from(now));\n");
+            } else {
+                content.append("        entity.setUpdatedAt(now);\n");
+            }
+        }
+        content.append("        ").append(jpaEntityName).append(" updated = ").append(jpaRepoVar).append(".save(entity);\n");
+        content.append("        return ").append(mapperVar).append(".").append(firstCharToLowerCase(jpaEntityName)).append("To").append(domainEntityName).append("(updated);\n");
+        content.append("    }\n\n");
+        
+        // Delete method
+        content.append("    @Override\n    @Transactional\n");
+        content.append("    public ").append(domainEntityName).append(" delete(").append(domainEntityName).append(" domainEntity, UUID updatedBy, ZonedDateTime now) {\n");
+        content.append("        ").append(jpaEntityName).append(" entity = ").append(mapperVar).append(".").append(firstCharToLowerCase(domainEntityName)).append("To").append(jpaEntityName).append("(domainEntity);\n");
+        if (hasUpdatedBy) {
+            content.append("        entity.setUpdatedBy(updatedBy);\n");
+        }
+        if (hasUpdatedAt) {
+            if (updatedAtNeedsConversion) {
+                content.append("        entity.setUpdatedAt(LocalDateTime.from(now));\n");
+            } else {
+                content.append("        entity.setUpdatedAt(now);\n");
+            }
+        }
+        if (hasDeleted) {
+            content.append("        entity.setIsDeleted(true);\n");
+        }
+        content.append("        ").append(jpaEntityName).append(" deleted = ").append(jpaRepoVar).append(".save(entity);\n");
+        content.append("        return ").append(mapperVar).append(".").append(firstCharToLowerCase(jpaEntityName)).append("To").append(domainEntityName).append("(deleted);\n");
+        content.append("    }\n\n");
+        
+        // GetById method
+        content.append("    @Override\n");
+        content.append("    public Optional<").append(domainEntityName).append("> getById(UUID id) {\n");
+        content.append("        return ").append(jpaRepoVar).append(".findById(id)\n");
+        content.append("            .map(").append(mapperVar).append("::").append(firstCharToLowerCase(jpaEntityName)).append("To").append(domainEntityName).append(");\n");
+        content.append("    }\n\n");
+        
+        // Query method
+        content.append("    @Override\n");
+        content.append("    public BaseQueryResponse<").append(domainEntityName).append("> query(").append(queryClass).append(" query) {\n");
+        content.append("        // TODO: Implement query logic based on query parameters\n");
+        content.append("        List<").append(jpaEntityName).append("> entities = ").append(jpaRepoVar).append(".findAll();\n");
+        content.append("        List<").append(domainEntityName).append("> domainEntities = entities.stream()\n");
+        content.append("            .map(").append(mapperVar).append("::").append(firstCharToLowerCase(jpaEntityName)).append("To").append(domainEntityName).append(")\n");
+        content.append("            .collect(Collectors.toList());\n");
+        content.append("        \n");
+        content.append("        return new BaseQueryResponse<>(domainEntities, 0, domainEntities.size(),\n");
+        content.append("            domainEntities.size(), 1, true);\n");
+        content.append("    }\n");
+        content.append("}\n");
+        
+        return content.toString();
+    }
+
+    private String generatePersistenceMapperContent(List<String> tables, String basePackageName, Connection conn, String schema, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, String projectArtifactId, Map<String, String> columnToEnumMap) throws SQLException {
+        StringBuilder methods = new StringBuilder();
+        Set<String> imports = new TreeSet<>();
+        
+        imports.add("import org.springframework.stereotype.Component;");
+        imports.add("import " + basePackageName + ".domain.core.entity.*;");
+        imports.add("import " + basePackageName + ".domain.core.valueobject.*;");
+        imports.add("import " + basePackageName + ".infrastructure.persistence.entity.*;");
+        
+        // UUID import not needed since we use value objects (InstitutionId, etc.) not raw UUID
+        
+        for (String table : tables) {
+            String entityName = snakeKebabCaseToPascalCase(table);
+            String domainEntityName = entityName + "DomainEntity";
+            String jpaEntityName = entityName + "Entity";
+            String idClassName = entityName + "Id";
+            
+            List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
+            Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(table, new HashMap<>());
+            
+            // Check if table has an id column
+            boolean hasIdColumn = columns.stream().anyMatch(col -> "id".equals(col.get("name")));
+            
+            // Generate Entity to DomainEntity method
+            methods.append("    public " + domainEntityName + " " + firstCharToLowerCase(jpaEntityName) + "To" + domainEntityName + "(" + jpaEntityName + " entity) {\n");
+            methods.append("        if (entity == null) return null;\n");
+            methods.append("        return new " + domainEntityName + "(\n");
+            
+            StringBuilder constructorParams = new StringBuilder();
+            
+            // Add ID parameter first if it wasn't in the database columns (generated ID)
+            if (!hasIdColumn) {
+                constructorParams.append("            new " + idClassName + "(entity.getId()),\n");
+            }
+            
+            for (Map<String, String> column : columns) {
+                String columnName = column.get("name");
+                String camelCaseName = snakeCaseToCamelCase(columnName);
+                String fieldName;
+                if (JAVA_KEYWORDS.contains(camelCaseName)) {
+                    fieldName = firstCharToLowerCase(entityName) + capitalizeFirstLetter(camelCaseName);
+                } else {
+                    fieldName = camelCaseName;
+                }
+                String getterName = "get" + capitalizeFirstLetter(fieldName);
+                String columnIdentifier = table + "." + columnName;
+                
+                if (columnName.equals("id")) {
+                    constructorParams.append("            new " + idClassName + "(entity." + getterName + "()),\n");
+                } else if (tableForeignKeys.containsKey(columnName)) {
+                    // Foreign key field
+                    String referencedTable = tableForeignKeys.get(columnName).getPkTableName();
+                    String referencedIdClass = snakeKebabCaseToPascalCase(referencedTable) + "Id";
+                    constructorParams.append("            entity." + getterName + "() != null ? new " + referencedIdClass + "(entity." + getterName + "()) : null,\n");
+                } else if (columnToEnumMap.containsKey(columnIdentifier)) {
+                    // Enum field - convert from Short to Enum
+                    String enumFqn = columnToEnumMap.get(columnIdentifier);
+                    String enumClassName = enumFqn.substring(enumFqn.lastIndexOf('.') + 1);
+                    imports.add("import " + enumFqn + ";");
+                    constructorParams.append("            entity." + getterName + "() != null ? " + enumClassName + ".fromValue(entity." + getterName + "().intValue()) : null,\n");
+                } else {
+                    constructorParams.append("            entity." + getterName + "(),\n");
+                }
+            }
+            if (constructorParams.length() > 0) {
+                constructorParams.setLength(constructorParams.length() - 2); // Remove last comma and newline
+            }
+            methods.append(constructorParams.toString());
+            methods.append("\n        );\n    }\n\n");
+            
+            // Generate DomainEntity to Entity method
+            methods.append("    public " + jpaEntityName + " " + firstCharToLowerCase(domainEntityName) + "To" + jpaEntityName + "(" + domainEntityName + " domainEntity) {\n");
+            methods.append("        if (domainEntity == null) return null;\n");
+            methods.append("        " + jpaEntityName + " entity = new " + jpaEntityName + "();\n");
+            
+            // Set ID first if it wasn't in the database columns (generated ID)
+            if (!hasIdColumn) {
+                methods.append("        entity.setId(domainEntity.getId().getValue());\n");
+            }
+            
+            for (Map<String, String> column : columns) {
+                String columnName = column.get("name");
+                String camelCaseName = snakeCaseToCamelCase(columnName);
+                String fieldName;
+                if (JAVA_KEYWORDS.contains(camelCaseName)) {
+                    fieldName = firstCharToLowerCase(entityName) + capitalizeFirstLetter(camelCaseName);
+                } else {
+                    fieldName = camelCaseName;
+                }
+                String setterName = "set" + capitalizeFirstLetter(fieldName);
+                String getterName = "get" + capitalizeFirstLetter(fieldName);
+                String columnIdentifier = table + "." + columnName;
+                
+                if (columnName.equals("id")) {
+                    methods.append("        entity." + setterName + "(domainEntity.getId().getValue());\n");
+                } else if (tableForeignKeys.containsKey(columnName)) {
+                    // Foreign key field
+                    methods.append("        entity." + setterName + "(domainEntity." + getterName + "() != null ? domainEntity." + getterName + "().getValue() : null);\n");
+                } else if (columnToEnumMap.containsKey(columnIdentifier)) {
+                    // Enum field - convert from Enum to Short
+                    methods.append("        entity." + setterName + "(domainEntity." + getterName + "() != null ? (short) domainEntity." + getterName + "().getValue() : null);\n");
+                } else {
+                    methods.append("        entity." + setterName + "(domainEntity." + getterName + "());\n");
+                }
+            }
+            methods.append("        return entity;\n    }\n\n");
+        }
+        
+        // UUID import not needed since all methods use value objects
+        
+        StringBuilder importStatements = new StringBuilder();
+        for (String imp : imports) {
+            importStatements.append(imp + "\n");
+        }
+        
+        String mapperClassName = snakeKebabCaseToPascalCase(projectArtifactId) + "PersistenceMapper";
+        return String.format("""
+package %s.infrastructure.persistence.mapper;
+
+%s
+@Component
+public class %s {
+
+%s}
+""", basePackageName, importStatements.toString(), mapperClassName, methods.toString());
     }
 }

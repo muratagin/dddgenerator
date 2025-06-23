@@ -26,12 +26,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import java.util.stream.Collectors;
 import java.util.Locale;
-import java.util.Optional;
 
 @Service
 public class ProjectService {
@@ -175,7 +173,7 @@ public class ProjectService {
         Path appServiceMainJava = Paths.get(appServiceModuleDir.toString(), "src", "main", "java", basePackagePath, "domain", "applicationservice");
         Files.createDirectories(appServiceMainJava);
         if (environmentalCredentialsRequest.getSelectedSchema() != null && !environmentalCredentialsRequest.getSelectedSchema().isEmpty()) {
-            generateApplicationServiceClasses(projectRequest, environmentalCredentialsRequest, appServiceMainJava, basePackageNameForClassGen);
+            generateApplicationServiceClasses(projectRequest, environmentalCredentialsRequest, appServiceMainJava, domainCoreMainJava, basePackageNameForClassGen);
         } else {
         Files.createFile(Paths.get(appServiceMainJava.toString(), ".gitkeep"));
         }
@@ -1180,7 +1178,7 @@ public class RepositoryOutputPortException extends RuntimeException {
                 foreignKeys.put(entry.getKey(), entry.getValue().values().stream().map(ForeignKeyInfo::getPkTableName).collect(Collectors.toSet()));
             }
 
-            Set<String> aggregateRoots = determineAggregateRoots(tables, foreignKeys);
+            Set<String> aggregateRoots = determineAggregateRootsFromDB(tables, foreignKeys);
             Map<String, String> tableEntityTypes = envRequest.getTableEntityTypes();
             Map<String, String> columnToEnumMap = new HashMap<>();
 
@@ -1496,7 +1494,7 @@ public class %s extends %s<%s> {
         return foreignKeys;
     }
 
-    public Set<String> determineAggregateRoots(List<String> allTables, Map<String, Set<String>> foreignKeys) {
+    public Set<String> determineAggregateRootsFromDB(List<String> allTables, Map<String, Set<String>> foreignKeys) {
         Set<String> aggregateRoots = new HashSet<>();
         // Rule 1: Tables with no outgoing FKs are roots.
         for (String table : allTables) {
@@ -1518,6 +1516,18 @@ public class %s extends %s<%s> {
                 }
             }
         } while (changed);
+
+        return aggregateRoots;
+    }
+
+    private Set<String> determineAggregateRootsFromUserSelection(Map<String, String> tableEntityTypes) {
+        Set<String> aggregateRoots = new HashSet<>();
+
+        for (Map.Entry<String, String> entry : tableEntityTypes.entrySet()) {
+            if ("AggregateRoot".equals(entry.getValue())) {
+                aggregateRoots.add(entry.getKey());
+            }
+        }
 
         return aggregateRoots;
     }
@@ -1594,40 +1604,44 @@ public class %s extends %s<%s> {
             "true", "false", "null"
     ));
 
-    private void generateApplicationServiceClasses(ProjectRequest projectRequest, EnvironmentalCredentialsRequest envRequest, Path appServiceMainJava, String basePackageName) throws IOException {
+    private void generateApplicationServiceClasses(ProjectRequest projectRequest, EnvironmentalCredentialsRequest envRequest, Path appServiceMainJava, Path domainCoreMainJava, String basePackageName) throws IOException {
         try (Connection conn = DriverManager.getConnection(envRequest.getLocalDatasourceUrl(), envRequest.getLocalDatasourceUsername(), envRequest.getLocalDatasourcePassword())) {
             String schema = envRequest.getSelectedSchema();
             List<String> tables = getTables(conn, schema);
             Map<String, Set<String>> foreignKeys = getForeignKeys(conn, schema);
-            Set<String> aggregateRoots = determineAggregateRoots(tables, foreignKeys);
+            Set<String> aggregateRoots = determineAggregateRootsFromUserSelection(envRequest.getTableEntityTypes());
             Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, schema);
 
             Map<String, String> columnToEnumMap = new HashMap<>();
-            String domainCoreModulePath = appServiceMainJava.toString().replace("application-service", "domain-core");
-
             for (String table : tables) {
                 List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
                 for (Map<String, String> column : columns) {
-                    String comment = column.get("REMARKS");
-                    String columnName = column.get("COLUMN_NAME");
+                    String comment = column.get("comment");
                     if (comment != null && !comment.isBlank()) {
-                        String enumFqn = generateEnumIfApplicable(comment, columnName, basePackageName, Paths.get(domainCoreModulePath));
+                        String enumFqn = generateEnumIfApplicable(comment, column.get("name"), basePackageName, domainCoreMainJava);
                         if (enumFqn != null) {
-                            columnToEnumMap.put(table + "." + columnName, enumFqn);
+                            columnToEnumMap.put(table + "." + column.get("name"), enumFqn);
                         }
                     }
                 }
             }
 
             String domainMapperName = snakeKebabCaseToPascalCase(projectRequest.getArtifactId()) + "DomainMapper";
-            generateDomainMapper(domainMapperName, basePackageName, appServiceMainJava, aggregateRoots, conn, schema, columnToEnumMap, detailedForeignKeys, aggregateRoots);
 
+            // Domain Entities (non-aggregate tables) should not have command/query packages generated
+
+            // Generate repositories and full command classes for aggregate roots (includes GetByIdResponse DTOs)
             for (String table : tables) {
                 if (aggregateRoots.contains(table)) {
                     generateRepositoryInterface(table, basePackageName, appServiceMainJava);
                     generateCommandClasses(table, basePackageName, appServiceMainJava, conn, schema, detailedForeignKeys, aggregateRoots, columnToEnumMap, domainMapperName, projectRequest);
                 }
             }
+
+            // Generate DomainMapper only for Aggregate Roots (not Domain Entities)
+            generateDomainMapper(domainMapperName, basePackageName, appServiceMainJava, aggregateRoots, conn, schema, columnToEnumMap, detailedForeignKeys, aggregateRoots);
+
+            // Domain Entities (non-aggregate tables) should not have query handlers generated
         } catch (SQLException e) {
             throw new RuntimeException("Failed to generate application service classes", e);
         }
@@ -1657,13 +1671,13 @@ public class %s extends %s<%s> {
             String queryResponseName = entityName + "QueryResponse";
             String entityNameLower = rootTable.toLowerCase(Locale.ENGLISH).replace("_", "");
 
-            // Collect imports for commands and responses
+            // Generate imports for commands and responses (only processing aggregate roots now)
             mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.create.%s;", basePackageName, entityNameLower, createCommandName));
             mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.create.%s;", basePackageName, entityNameLower, createResponseName));
             mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.update.%s;", basePackageName, entityNameLower, updateCommandName));
             mapperImports.add(String.format("import %s.domain.applicationservice.commands.%s.update.%s;", basePackageName, entityNameLower, updateResponseName));
-            mapperImports.add(String.format("import %s.domain.applicationservice.queries.%s.getbyid.%s;", basePackageName, entityNameLower, getByIdResponseName));
             mapperImports.add(String.format("import %s.domain.applicationservice.queries.%s.query.%s;", basePackageName, entityNameLower, queryResponseName));
+            mapperImports.add(String.format("import %s.domain.applicationservice.queries.%s.getbyid.%s;", basePackageName, entityNameLower, getByIdResponseName));
             
             List<Map<String, String>> columns = getColumnsForTable(conn, schema, rootTable);
             Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(rootTable, new HashMap<>());
@@ -1692,9 +1706,7 @@ public class %s extends %s<%s> {
 
                 // For Command to DomainEntity mapping (CREATE)
                 if (columnToEnumMap.containsKey(columnIdentifier)) {
-                    String enumFqn = columnToEnumMap.get(columnIdentifier);
-                    String enumClassName = enumFqn.substring(enumFqn.lastIndexOf('.') + 1);
-                    domainEntityConstructorArgs.append(String.format(", %s.fromValue(%s.get%s())", enumClassName, createCommandVar, capitalizeFirstLetter(fieldName)));
+                    domainEntityConstructorArgs.append(String.format(", %s.get%s()", createCommandVar, capitalizeFirstLetter(fieldName)));
                 } else if (tableForeignKeys.containsKey(columnName)) {
                     String referencedEntityPascal = snakeKebabCaseToPascalCase(tableForeignKeys.get(columnName).getPkTableName());
                     domainEntityConstructorArgs.append(String.format(", new %sId(%s.get%s())", referencedEntityPascal, createCommandVar, capitalizeFirstLetter(fieldName)));
@@ -1706,7 +1718,7 @@ public class %s extends %s<%s> {
 
                 // For DomainEntity to Response mapping (CREATE/UPDATE)
                 if (columnToEnumMap.containsKey(columnIdentifier)) {
-                    responseConstructorArgs.append(String.format(", (short) %sDomainEntity.get%s().getValue()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
+                    responseConstructorArgs.append(String.format(", %sDomainEntity.get%s()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
                 } else if (tableForeignKeys.containsKey(columnName)) {
                     responseConstructorArgs.append(String.format(", %sDomainEntity.get%s().getValue()", rootTableCamelCase, capitalizeFirstLetter(fieldName)));
                 } else {
@@ -1714,6 +1726,7 @@ public class %s extends %s<%s> {
                 }
             }
 
+            // Generate CREATE and UPDATE mapping methods (only processing aggregate roots now)
             methods.append(String.format("    public %s %sTo%s(%s %s, ZonedDateTime now) {\n", domainEntityName, createCommandVar, domainEntityName, createCommandName, createCommandVar));
             methods.append(String.format("        return new %s(%s);\n", domainEntityName, domainEntityConstructorArgs.toString()));
             methods.append("    }\n\n");
@@ -1738,9 +1751,7 @@ public class %s extends %s<%s> {
                 }
                 String columnIdentifier = rootTable + "." + columnName;
                 if (columnToEnumMap.containsKey(columnIdentifier)) {
-                    String enumFqn = columnToEnumMap.get(columnIdentifier);
-                    String enumClassName = enumFqn.substring(enumFqn.lastIndexOf('.') + 1);
-                    updateDomainEntityConstructorArgs.append(String.format(", %s.fromValue(update%sCommand.get%s())", enumClassName, entityName, capitalizeFirstLetter(fieldName)));
+                    updateDomainEntityConstructorArgs.append(String.format(", update%sCommand.get%s()", entityName, capitalizeFirstLetter(fieldName)));
                 } else if (tableForeignKeys.containsKey(columnName)) {
                     String referencedEntityPascal = snakeKebabCaseToPascalCase(tableForeignKeys.get(columnName).getPkTableName());
                     updateDomainEntityConstructorArgs.append(String.format(", new %sId(update%sCommand.get%s())", referencedEntityPascal, entityName, capitalizeFirstLetter(fieldName)));
@@ -1759,20 +1770,15 @@ public class %s extends %s<%s> {
             methods.append(String.format("        return new %s(%s);\n", updateResponseName, responseConstructorArgs.toString()));
             methods.append("    }\n\n");
 
+            // Add QueryResponse mapping method
+            methods.append(String.format("    public %s %sDomainEntityTo%s(%s %s) {\n", queryResponseName, firstCharToLowerCase(entityName), queryResponseName, domainEntityName, firstCharToLowerCase(domainEntityName)));
+            methods.append(String.format("        return new %s(%s);\n", queryResponseName, responseConstructorArgs.toString()));
+            methods.append("    }\n\n");
+
             // --- GET BY ID methods ---
             methods.append(String.format("    public %s %sDomainEntityToGetById%sResponse(%s %sDomainEntity) {\n", getByIdResponseName, rootTableCamelCase, entityName, domainEntityName, rootTableCamelCase));
             methods.append(String.format("        return new %s(%s);\n", getByIdResponseName, responseConstructorArgs.toString()));
             methods.append("    }\n\n");
-
-            // Add QueryResponse mapping method
-            methods.append(String.format("    public %s %sDomainEntityTo%s(%s %s) {\n", queryResponseName, firstCharToLowerCase(entityName), queryResponseName, domainEntityName, firstCharToLowerCase(domainEntityName)));
-            methods.append(String.format("        return new %s(\n", queryResponseName));
-            // TODO: Add all fields in correct order (id, then all columns)
-            // For now, just pass the domain entity fields as in your sample
-            // You may want to expand this logic to match your actual field mapping
-            methods.append(String.format("            %s.getId().getValue(),\n", firstCharToLowerCase(domainEntityName)));
-            // ... add other fields as needed ...
-            methods.append("        );\n    }\n\n");
         }
 
         String importStatements = mapperImports.stream().collect(Collectors.joining("\n"));
@@ -1879,10 +1885,10 @@ private void generateRepositoryInterface(String tableName, String basePackageNam
 
     // Helper to determine if a column is filterable for Query DTO
     private boolean isFilterableField(String columnName, String dbType) {
-        String lower = columnName.toLowerCase();
+        String lower = columnName.toLowerCase(Locale.ENGLISH);
         if (lower.equals("id") || lower.endsWith("_id") || lower.endsWith("id")) return false;
         if (dbType == null) return false;
-        String type = dbType.toLowerCase();
+        String type = dbType.toLowerCase(Locale.ENGLISH);
         return type.contains("char") || type.contains("text") || type.contains("enum") || type.contains("bool");
     }
 
@@ -1940,8 +1946,17 @@ private void generateRepositoryInterface(String tableName, String basePackageNam
         StringBuilder constructorBody = new StringBuilder();
         Set<String> imports = new TreeSet<>();
         imports.add("import lombok.Getter;");
+        imports.add("import java.util.UUID;");
+        
+        // Always include id field first
+        fields.append("    private final UUID id;\n\n");
+        constructorParams.append("UUID id, ");
+        constructorBody.append("        this.id = id;\n");
+        
         for (Map<String, String> column : columns) {
             String columnName = column.get("name");
+            // Skip id column since we already added it
+            if (columnName.equals("id")) continue;
             String dbType = column.get("type");
             String camelCaseName = snakeCaseToCamelCase(columnName);
             String safeFieldName = getSafeFieldName(entityName, camelCaseName);
@@ -2060,7 +2075,7 @@ public class %sCreateCommandHandler {
     public %s create%s(%s %s) {
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of("UTC"));
         %s domainEntity = %s.%sTo%s(%s, now);
-        %s savedDomainEntity = %s.create(domainEntity);
+        %s savedDomainEntity = %s.create(domainEntity, %s.getCreatedBy(), now);
         if (savedDomainEntity == null) {
             log.error("Could not create %s");
             throw new RepositoryOutputPortException();
@@ -2070,7 +2085,7 @@ public class %sCreateCommandHandler {
     }
 }
 """,
-            basePackageName, entityName.toLowerCase(),
+            basePackageName, entityName.toLowerCase(Locale.ENGLISH),
             basePackageName, domainMapperName,
             basePackageName, repositoryName,
             basePackageName, domainEntityName,
@@ -2080,9 +2095,9 @@ public class %sCreateCommandHandler {
             repositoryVarName, repositoryVarName, domainMapperVarName, domainMapperVarName,
             domainEntityName, entityName, commandName, commandVarName,
             domainEntityName, domainMapperVarName, commandVarName, domainEntityName, commandVarName,
-            domainEntityName, repositoryVarName,
-            entityName.toLowerCase(),
-            domainEntityName, entityName.toLowerCase());
+            domainEntityName, repositoryVarName, commandVarName,
+            entityName.toLowerCase(Locale.ENGLISH),
+            domainEntityName, entityName.toLowerCase(Locale.ENGLISH));
     }
 
     private String generateCreateCommand(String entityName, String basePackageName, List<Map<String, String>> columns, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Set<String> aggregateRoots, Map<String, String> columnToEnumMap) {
@@ -2094,8 +2109,19 @@ public class %sCreateCommandHandler {
         imports.add("lombok.Getter;");
         imports.add("lombok.ToString;");
         imports.add("com.fasterxml.jackson.annotation.JsonIgnoreProperties;");
+        imports.add("java.util.UUID;");
 
         Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(currentTable, new HashMap<>());
+
+        // Check if createdBy field already exists in database columns
+        boolean hasCreatedByColumn = columns.stream()
+            .anyMatch(column -> "created_by".equals(column.get("name")));
+        
+        // Add createdBy field only if it doesn't exist in database columns
+        if (!hasCreatedByColumn) {
+            fields.append("    @NotNull\n");
+            fields.append("    private final UUID createdBy;\n\n");
+        }
 
         for (Map<String, String> column : columns) {
             String columnName = column.get("name");
@@ -2226,7 +2252,17 @@ public class Create%sResponse {
         Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys.getOrDefault(currentTable, new HashMap<>());
 
         // Always include id for update
-        fields.append("    @NotNull\n    @Setter\n    private UUID id;\n");
+        fields.append("    @NotNull\n    @Setter\n    private UUID id;\n\n");
+        
+        // Check if updatedBy field already exists in database columns
+        boolean hasUpdatedByColumn = columns.stream()
+            .anyMatch(column -> "updated_by".equals(column.get("name")));
+        
+        // Add updatedBy field only if it doesn't exist in database columns
+        if (!hasUpdatedByColumn) {
+            fields.append("    @NotNull\n");
+            fields.append("    private final UUID updatedBy;\n\n");
+        }
         imports.add("java.util.UUID;");
 
         for (Map<String, String> column : columns) {
@@ -2381,7 +2417,7 @@ public class %sUpdateCommandHandler {
     public %s update%s(%s %s) {
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of("UTC"));
         %s domainEntity = %s.%sTo%s(%s, now);
-        %s updatedDomainEntity = %s.update(domainEntity);
+        %s updatedDomainEntity = %s.update(domainEntity, %s.getUpdatedBy(), now);
         if (updatedDomainEntity == null) {
             log.error("Could not update %s");
             throw new RepositoryOutputPortException();
@@ -2391,7 +2427,7 @@ public class %sUpdateCommandHandler {
     }
 }
 """,
-            basePackageName, entityName.toLowerCase(),
+            basePackageName, entityName.toLowerCase(Locale.ENGLISH),
             basePackageName, domainMapperName,
             basePackageName, repositoryName,
             basePackageName, domainEntityName,
@@ -2401,15 +2437,15 @@ public class %sUpdateCommandHandler {
             repositoryVarName, repositoryVarName, domainMapperVarName, domainMapperVarName,
             domainEntityName, entityName, commandName, commandVarName,
             domainEntityName, domainMapperVarName, commandVarName, domainEntityName, commandVarName,
-            domainEntityName, repositoryVarName,
-            entityName.toLowerCase(),
-            domainEntityName, entityName.toLowerCase());
+            domainEntityName, repositoryVarName, commandVarName,
+            entityName.toLowerCase(Locale.ENGLISH),
+            domainEntityName, entityName.toLowerCase(Locale.ENGLISH));
     }
 
     private String generateDeleteCommandHandler(String entityName, String basePackageName) {
         String repositoryName = entityName + "Repository";
         String domainEntityName = entityName + "DomainEntity";
-        String entityLower = entityName.toLowerCase();
+        String entityLower = entityName.toLowerCase(Locale.ENGLISH);
         String repositoryVar = firstCharToLowerCase(repositoryName);
         return String.format("""
 package %s.domain.applicationservice.commands.%s.delete;
@@ -2480,18 +2516,19 @@ public class Delete%sResponse {
     private final UUID updatedBy;
 }
 """,
-            basePackageName, entityName.toLowerCase(), entityName
+            basePackageName, entityName.toLowerCase(Locale.ENGLISH), entityName
         );
     }
 
     private String generateGetByIdQueryHandler(String entityName, String basePackageName, String domainMapperName) {
         String repositoryName = entityName + "Repository";
         String domainEntityName = entityName + "DomainEntity";
-        String entityLower = entityName.toLowerCase();
+        String entityLower = entityName.toLowerCase(Locale.ENGLISH);
         String repositoryVar = firstCharToLowerCase(repositoryName);
         String domainMapperVar = firstCharToLowerCase(domainMapperName);
         String responseClassName = "GetById" + entityName + "Response";
-        String mappingMethod = entityLower + "DomainEntityToGetById" + entityName + "Response";
+        String entityCamelCase = firstCharToLowerCase(entityName);
+        String mappingMethod = entityCamelCase + "DomainEntityToGetById" + entityName + "Response";
         return String.format("""
 package %s.domain.applicationservice.queries.%s.getbyid;
 

@@ -260,7 +260,7 @@ public class ProjectController {
             }
 
             // Get aggregate roots
-            Set<String> aggregateRoots = projectService.determineAggregateRoots(
+            Set<String> aggregateRoots = projectService.determineAggregateRootsFromDB(
                 tables,
                 projectService.getForeignKeys(connection, schemaName)
             );

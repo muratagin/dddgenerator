@@ -38,7 +38,7 @@ public class ProjectService {
     private static final String DEFAULT_JAVA_VERSION = "21";
     private static final String DEFAULT_SPRING_BOOT_VERSION = "3.3.1";
 
-    public byte[] generateProjectZip(ProjectRequest projectRequest, EnvironmentalCredentialsRequest environmentalCredentialsRequest) throws IOException {
+    public byte[] generateProjectZip(ProjectRequest projectRequest, EnvironmentalCredentialsRequest environmentalCredentialsRequest) throws IOException, SQLException {
         String tempDirName = "project-" + projectRequest.getArtifactId() + "-" + System.currentTimeMillis();
         Path tempDirPath = Files.createTempDirectory(tempDirName);
         CrossCuttingLibraryRequest crossCuttingLib = projectRequest.getCrossCuttingLibrary();
@@ -234,6 +234,26 @@ public class ProjectService {
             }
         } else {
             Files.createFile(Paths.get(appLayerMainJava.toString(), ".gitkeep"));
+        }
+
+        // Generate requests documentation structure
+        String requestsDir = "requests";
+        Path requestsModuleDir = Paths.get(tempDir.toString(), requestsDir);
+        Files.createDirectories(requestsModuleDir);
+
+        // Create http subfolder
+        Path httpDir = Paths.get(requestsModuleDir.toString(), "http");
+        Files.createDirectories(httpDir);
+
+        // Create postman subfolder  
+        Path postmanDir = Paths.get(requestsModuleDir.toString(), "postman");
+        Files.createDirectories(postmanDir);
+
+        // Generate HTTP request files and Postman collection if schema is selected
+        if (environmentalCredentialsRequest.getSelectedSchema() != null && 
+            !environmentalCredentialsRequest.getSelectedSchema().isEmpty()) {
+            generateHttpRequestFiles(environmentalCredentialsRequest, httpDir, basePackageNameForClassGen);
+            generatePostmanCollection(environmentalCredentialsRequest, postmanDir, basePackageNameForClassGen, projectRequest);
         }
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -3674,5 +3694,458 @@ public class %s implements %s {
         );
         
         Files.writeString(Paths.get(implDir.toString(), implName + ".java"), implContent);
+    }
+
+    private void generateHttpRequestFiles(EnvironmentalCredentialsRequest environmentalCredentialsRequest, Path httpDir, String basePackageName) throws IOException, SQLException {
+        try (Connection conn = DriverManager.getConnection(
+                environmentalCredentialsRequest.getLocalDatasourceUrl(),
+                environmentalCredentialsRequest.getLocalDatasourceUsername(),
+                environmentalCredentialsRequest.getLocalDatasourcePassword())) {
+
+            String schema = environmentalCredentialsRequest.getSelectedSchema();
+            List<String> tables = getTables(conn, schema);
+            Map<String, Set<String>> foreignKeys = getForeignKeys(conn, schema);
+            Set<String> aggregateRoots = determineAggregateRootsFromUserSelection(environmentalCredentialsRequest.getTableEntityTypes());
+            
+            for (String tableName : aggregateRoots) {
+                String entityNameLower = tableName.toLowerCase(Locale.ENGLISH).replace("_", "");
+                String httpFileName = entityNameLower + ".http";
+                String httpContent = generateHttpFileContent(tableName, basePackageName, environmentalCredentialsRequest.getServerPort(), conn, schema);
+                Files.writeString(Paths.get(httpDir.toString(), httpFileName), httpContent);
+            }
+        }
+    }
+
+    private String generateHttpFileContent(String tableName, String basePackageName, String serverPort, Connection conn, String schema) throws SQLException {
+        String entityNameLower = tableName.toLowerCase(Locale.ENGLISH).replace("_", "");
+        String entityName = snakeKebabCaseToPascalCase(tableName);
+        String entityNameLowerPlural = pluralize(entityNameLower);
+        
+        // Get columns to generate proper request bodies
+        List<Map<String, String>> columns = getColumnsForTable(conn, schema, tableName);
+        String createRequestBody = generateCreateRequestBody(columns);
+        String updateRequestBody = generateUpdateRequestBody(columns);
+        String queryRequestBody = generateQueryRequestBody(columns);
+        
+        return String.format("""
+### Create %s
+POST http://localhost:%s/api/v1/%s
+Content-Type: application/json
+
+%s
+
+### Get %s by ID
+GET http://localhost:%s/api/v1/%s/123e4567-e89b-12d3-a456-426614174000
+
+### Update %s
+PUT http://localhost:%s/api/v1/%s/123e4567-e89b-12d3-a456-426614174000
+Content-Type: application/json
+
+%s
+
+### Query %s
+POST http://localhost:%s/api/v1/%s/query
+Content-Type: application/json
+
+%s
+
+### Delete %s
+DELETE http://localhost:%s/api/v1/%s/123e4567-e89b-12d3-a456-426614174000
+
+### LOCALHOST ALTERNATIVE (with pagination)
+GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=id,asc
+
+### PRODUCTION ENVIRONMENT  
+GET https://your-domain.com/api/v1/%s/123e4567-e89b-12d3-a456-426614174000
+
+### WITH QUERY PARAMETERS (pagination and sorting)
+GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=name,asc
+""", 
+            entityName, serverPort, entityNameLowerPlural,    // Create %s, POST localhost:%s/api/v1/%s
+            createRequestBody,                                // Request body for create
+            entityName, serverPort, entityNameLowerPlural,    // Get %s by ID, GET localhost:%s/api/v1/%s/...
+            entityName, serverPort, entityNameLowerPlural,    // Update %s, PUT localhost:%s/api/v1/%s/...
+            updateRequestBody,                                // Request body for update
+            entityName, serverPort, entityNameLowerPlural,    // Query %s, POST localhost:%s/api/v1/%s/query
+            queryRequestBody,                                 // Request body for query
+            entityName, serverPort, entityNameLowerPlural,    // Delete %s, DELETE localhost:%s/api/v1/%s/...
+            serverPort, entityNameLowerPlural,                // GET localhost:%s/api/v1/%s?page=0...
+            entityNameLowerPlural,                            // GET https://your-domain.com/api/v1/%s/...
+            serverPort, entityNameLowerPlural                 // GET localhost:%s/api/v1/%s?page=0...
+        );
+    }
+
+    private String generateCreateRequestBody(List<Map<String, String>> columns) {
+        if (columns == null || columns.isEmpty()) {
+            return "{\n  \"name\": \"Sample Name\",\n  \"description\": \"Sample description\"\n}";
+        }
+        
+        StringBuilder body = new StringBuilder("{\n");
+        boolean first = true;
+        
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("COLUMN_NAME");
+            String dataType = column.get("DATA_TYPE");
+            
+            // Skip null columns or auto-generated columns
+            if (columnName == null || dataType == null) {
+                continue;
+            }
+            
+            if (columnName.equalsIgnoreCase("id") || 
+                columnName.toLowerCase().contains("created") || 
+                columnName.toLowerCase().contains("updated") ||
+                columnName.toLowerCase().contains("version")) {
+                continue;
+            }
+            
+            if (!first) {
+                body.append(",\n");
+            }
+            first = false;
+            
+            String camelCaseColumnName = snakeCaseToCamelCase(columnName);
+            String sampleValue = generateSampleValue(dataType, columnName);
+            body.append("  \"").append(camelCaseColumnName).append("\": ").append(sampleValue);
+        }
+        
+        // If no columns were added, add default fallback
+        if (first) {
+            body.append("  \"name\": \"Sample Name\",\n");
+            body.append("  \"description\": \"Sample description\"");
+        }
+        
+        body.append("\n}");
+        return body.toString();
+    }
+
+    private String generateUpdateRequestBody(List<Map<String, String>> columns) {
+        if (columns == null || columns.isEmpty()) {
+            return "{\n  \"id\": \"123e4567-e89b-12d3-a456-426614174000\",\n  \"name\": \"Updated Name\",\n  \"description\": \"Updated description\"\n}";
+        }
+        
+        // Update body is similar to create but may include ID
+        StringBuilder body = new StringBuilder("{\n");
+        boolean first = true;
+        
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("COLUMN_NAME");
+            String dataType = column.get("DATA_TYPE");
+            
+            // Skip null columns or auto-generated columns except ID for updates
+            if (columnName == null || dataType == null) {
+                continue;
+            }
+            
+            if (columnName.toLowerCase().contains("created") || 
+                columnName.toLowerCase().contains("version")) {
+                continue;
+            }
+            
+            if (!first) {
+                body.append(",\n");
+            }
+            first = false;
+            
+            String camelCaseColumnName = snakeCaseToCamelCase(columnName);
+            String sampleValue = columnName.equalsIgnoreCase("id") ? 
+                "\"123e4567-e89b-12d3-a456-426614174000\"" : 
+                generateSampleValue(dataType, columnName);
+            body.append("  \"").append(camelCaseColumnName).append("\": ").append(sampleValue);
+        }
+        
+        // If no columns were added, add default fallback
+        if (first) {
+            body.append("  \"id\": \"123e4567-e89b-12d3-a456-426614174000\",\n");
+            body.append("  \"name\": \"Updated Name\",\n");
+            body.append("  \"description\": \"Updated description\"");
+        }
+        
+        body.append("\n}");
+        return body.toString();
+    }
+
+    private String generateQueryRequestBody(List<Map<String, String>> columns) {
+        if (columns == null || columns.isEmpty()) {
+            return "{\n  \"name\": \"Search criteria\",\n  \"description\": \"Sample query\"\n}";
+        }
+        
+        StringBuilder body = new StringBuilder("{\n");
+        boolean first = true;
+        int fieldCount = 0;
+        
+        for (Map<String, String> column : columns) {
+            String columnName = column.get("COLUMN_NAME");
+            String dataType = column.get("DATA_TYPE");
+            
+            // Skip null columns, auto-generated columns and only include a few fields for query
+            if (columnName == null || dataType == null) {
+                continue;
+            }
+            
+            if (columnName.equalsIgnoreCase("id") || 
+                columnName.toLowerCase().contains("created") || 
+                columnName.toLowerCase().contains("updated") ||
+                columnName.toLowerCase().contains("version") ||
+                fieldCount >= 3) {
+                continue;
+            }
+            
+            if (!first) {
+                body.append(",\n");
+            }
+            first = false;
+            fieldCount++;
+            
+            String camelCaseColumnName = snakeCaseToCamelCase(columnName);
+            String sampleValue = generateSampleValue(dataType, columnName);
+            body.append("  \"").append(camelCaseColumnName).append("\": ").append(sampleValue);
+        }
+        
+        // If no columns were added, add default fallback
+        if (first) {
+            body.append("  \"name\": \"Search criteria\",\n");
+            body.append("  \"description\": \"Sample query\"");
+        }
+        
+        body.append("\n}");
+        return body.toString();
+    }
+
+    private String generateSampleValue(String dataType, String columnName) {
+        if (dataType == null || columnName == null) {
+            return "\"Sample Value\"";
+        }
+        
+        String lowerColumnName = columnName.toLowerCase();
+        
+        if (dataType.contains("VARCHAR") || dataType.contains("TEXT") || dataType.contains("CHAR")) {
+            if (lowerColumnName.contains("email")) {
+                return "\"user@example.com\"";
+            } else if (lowerColumnName.contains("name")) {
+                return "\"Sample " + snakeKebabCaseToPascalCase(columnName) + "\"";
+            } else if (lowerColumnName.contains("description")) {
+                return "\"Sample description\"";
+            } else if (lowerColumnName.contains("code")) {
+                return "\"SAMPLE_CODE\"";
+            } else {
+                return "\"Sample Value\"";
+            }
+        } else if (dataType.contains("INT") || dataType.contains("NUMERIC") || dataType.contains("DECIMAL")) {
+            if (lowerColumnName.contains("price") || lowerColumnName.contains("amount")) {
+                return "99.99";
+            } else {
+                return "123";
+            }
+        } else if (dataType.contains("BOOLEAN") || dataType.contains("BIT")) {
+            return "true";
+        } else if (dataType.contains("DATE") || dataType.contains("TIME")) {
+            return "\"2024-01-01T10:00:00\"";
+        } else if (dataType.contains("UUID")) {
+            return "\"123e4567-e89b-12d3-a456-426614174000\"";
+        } else {
+            return "\"Sample Value\"";
+        }
+    }
+
+    private void generatePostmanCollection(EnvironmentalCredentialsRequest environmentalCredentialsRequest, Path postmanDir, String basePackageName, ProjectRequest projectRequest) throws IOException, SQLException {
+        try (Connection conn = DriverManager.getConnection(
+                environmentalCredentialsRequest.getLocalDatasourceUrl(),
+                environmentalCredentialsRequest.getLocalDatasourceUsername(),
+                environmentalCredentialsRequest.getLocalDatasourcePassword())) {
+
+            String schema = environmentalCredentialsRequest.getSelectedSchema();
+            List<String> tables = getTables(conn, schema);
+            Map<String, Set<String>> foreignKeys = getForeignKeys(conn, schema);
+            Set<String> aggregateRoots = determineAggregateRootsFromUserSelection(environmentalCredentialsRequest.getTableEntityTypes());
+            String postmanContent = generatePostmanCollectionContent(aggregateRoots, projectRequest, environmentalCredentialsRequest.getServerPort(), conn, schema);
+            String fileName = projectRequest.getArtifactId() + ".postman_collection.json";
+            Files.writeString(Paths.get(postmanDir.toString(), fileName), postmanContent);
+        }
+    }
+
+    private String generatePostmanCollectionContent(Set<String> aggregateRoots, ProjectRequest projectRequest, String serverPort, Connection conn, String schema) throws SQLException {
+        StringBuilder items = new StringBuilder();
+        boolean first = true;
+        
+        for (String tableName : aggregateRoots) {
+            if (!first) {
+                items.append(",\n");
+            }
+            first = false;
+            
+            String entityName = snakeKebabCaseToPascalCase(tableName);
+            String entityNameLower = tableName.toLowerCase(Locale.ENGLISH).replace("_", "");
+            String entityNameLowerPlural = pluralize(entityNameLower);
+            
+            // Get columns to generate proper request bodies
+            List<Map<String, String>> columns = getColumnsForTable(conn, schema, tableName);
+            String createRequestBody = generateCreateRequestBody(columns).replace("\"", "\\\"").replace("\n", "\\n");
+            String updateRequestBody = generateUpdateRequestBody(columns).replace("\"", "\\\"").replace("\n", "\\n");
+            String queryRequestBody = generateQueryRequestBody(columns).replace("\"", "\\\"").replace("\n", "\\n");
+            
+            items.append(String.format("""
+        {
+            "name": "%s",
+            "item": [
+                {
+                    "name": "Commands",
+                    "item": [
+                        {
+                            "name": "Create",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "%s",
+                                    "options": {
+                                        "raw": {
+                                            "language": "json"
+                                        }
+                                    }
+                                },
+                                "url": {
+                                    "raw": "http://localhost:%s/api/v1/%s",
+                                    "protocol": "http",
+                                    "host": ["localhost"],
+                                    "port": "%s",
+                                    "path": ["api", "v1", "%s"]
+                                }
+                            }
+                        },
+                        {
+                            "name": "Update",
+                            "request": {
+                                "method": "PUT",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "%s",
+                                    "options": {
+                                        "raw": {
+                                            "language": "json"
+                                        }
+                                    }
+                                },
+                                "url": {
+                                    "raw": "http://localhost:%s/api/v1/%s/{{%sId}}",
+                                    "protocol": "http",
+                                    "host": ["localhost"],
+                                    "port": "%s",
+                                    "path": ["api", "v1", "%s", "{{%sId}}"]
+                                }
+                            }
+                        },
+                        {
+                            "name": "Delete",
+                            "request": {
+                                "method": "DELETE",
+                                "header": [],
+                                "url": {
+                                    "raw": "http://localhost:%s/api/v1/%s/{{%sId}}",
+                                    "protocol": "http",
+                                    "host": ["localhost"],
+                                    "port": "%s",
+                                    "path": ["api", "v1", "%s", "{{%sId}}"]
+                                }
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Queries",
+                    "item": [
+                        {
+                            "name": "Get By Id",
+                            "request": {
+                                "method": "GET",
+                                "header": [],
+                                "url": {
+                                    "raw": "http://localhost:%s/api/v1/%s/{{%sId}}",
+                                    "protocol": "http",
+                                    "host": ["localhost"],
+                                    "port": "%s",
+                                    "path": ["api", "v1", "%s", "{{%sId}}"]
+                                }
+                            }
+                        },
+                        {
+                            "name": "Query",
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "%s",
+                                    "options": {
+                                        "raw": {
+                                            "language": "json"
+                                        }
+                                    }
+                                },
+                                "url": {
+                                    "raw": "http://localhost:%s/api/v1/%s/query",
+                                    "protocol": "http",
+                                    "host": ["localhost"],
+                                    "port": "%s",
+                                    "path": ["api", "v1", "%s", "query"]
+                                }
+                            }
+                        }
+                    ]
+                }
+            ]
+        }""", 
+                entityName,                                    // 1. "name": "%s"
+                createRequestBody,                             // 2. Create request body
+                serverPort, entityNameLowerPlural,             // 3-4. localhost:%s/api/v1/%s
+                serverPort, entityNameLowerPlural,             // 5-6. port + path
+                updateRequestBody,                             // 7. Update request body
+                serverPort, entityNameLowerPlural, entityNameLower, // 8-10. localhost:%s/api/v1/%s/{{%sId}}
+                serverPort, entityNameLowerPlural, entityNameLower, // 11-13. port + path + {{%sId}}
+                serverPort, entityNameLowerPlural, entityNameLower, // 14-16. DELETE localhost:%s/api/v1/%s/{{%sId}}
+                serverPort, entityNameLowerPlural, entityNameLower, // 17-19. port + path + {{%sId}}
+                serverPort, entityNameLowerPlural, entityNameLower, // 20-22. GET localhost:%s/api/v1/%s/{{%sId}}
+                serverPort, entityNameLowerPlural, entityNameLower, // 23-25. port + path + {{%sId}}
+                queryRequestBody,                              // 26. Query request body
+                serverPort, entityNameLowerPlural,             // 27-28. localhost:%s/api/v1/%s/query
+                serverPort, entityNameLowerPlural              // 29-30. port + path
+            ));
+        }
+        
+        return String.format("""
+{
+    "info": {
+        "_postman_id": "%s",
+        "name": "%s API Collection",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        "_exporter_id": "generated"
+    },
+    "item": [
+%s
+    ],
+    "variable": [
+        {
+            "key": "baseUrl",
+            "value": "http://localhost:8080"
+        }
+    ]
+}""", java.util.UUID.randomUUID().toString(), projectRequest.getArtifactId(), items.toString());
     }
 }

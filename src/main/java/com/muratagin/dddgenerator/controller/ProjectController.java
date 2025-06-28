@@ -148,7 +148,7 @@ public class ProjectController {
                 session.setAttribute(SESSION_PROJECT_ZIP_BYTES, zipBytes);
                 session.setAttribute(SESSION_PROJECT_FILE_NAME, fileName);
                 return "redirect:/ui/download-page";
-            } catch (IOException | IllegalArgumentException e) {
+            } catch (IOException | SQLException | IllegalArgumentException e) {
                 redirectAttributes.addFlashAttribute("globalErrorMessage", "Error generating project: " + e.getMessage());
                 // Don't clear sessionStatus here, allow user to go back and correct
                 return "redirect:/ui/generate-project"; // Or back to environmental if more appropriate
@@ -350,7 +350,7 @@ public class ProjectController {
             // which is called in /perform-download, along with projectRequest.
             return "redirect:/ui/download-page";
 
-        } catch (IOException | IllegalArgumentException e) {
+        } catch (IOException | SQLException | IllegalArgumentException e) {
             redirectAttributes.addFlashAttribute("globalErrorMessage", "Error generating project: " + e.getMessage());
             // Don't clear sessionStatus here, allow user to go back and correct
             // Redirect to the page that submitted here. If schema selection was involved, that's the one.

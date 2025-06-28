@@ -225,6 +225,13 @@ public class ProjectService {
             Path appLayerPayloadDir = Paths.get(appLayerMainJava.toString(), "payload");
             Files.createDirectories(appLayerPayloadDir);
             Files.writeString(Paths.get(appLayerPayloadDir.toString(), "ResultObject.java"), generateDefaultResultObjectContent(basePackageNameForClassGen));
+
+            if (environmentalCredentialsRequest.getSelectedSchema() != null && !environmentalCredentialsRequest.getSelectedSchema().isEmpty()) {
+                // Generate REST controllers for aggregate roots
+                Path appLayerRestDir = Paths.get(appLayerMainJava.toString(), "rest");
+                Files.createDirectories(appLayerRestDir);
+                generateRestControllers(environmentalCredentialsRequest, appLayerRestDir, basePackageNameForClassGen);
+            }
         } else {
             Files.createFile(Paths.get(appLayerMainJava.toString(), ".gitkeep"));
         }
@@ -305,6 +312,78 @@ public class ProjectService {
             return "";
         }
         return Character.toUpperCase(input.charAt(0)) + input.substring(1);
+    }
+
+    private String pluralize(String word) {
+        if (word == null || word.isEmpty()) {
+            return word;
+        }
+        
+        String lowerWord = word.toLowerCase();
+        
+        // Handle irregular plurals
+        Map<String, String> irregularPlurals = Map.of(
+            "person", "people",
+            "child", "children",
+            "foot", "feet",
+            "tooth", "teeth",
+            "goose", "geese",
+            "mouse", "mice",
+            "man", "men",
+            "woman", "women",
+            "ox", "oxen"
+        );
+        
+        if (irregularPlurals.containsKey(lowerWord)) {
+            return irregularPlurals.get(lowerWord);
+        }
+        
+        // Words ending in 'y' preceded by a consonant: change 'y' to 'ies'
+        if (lowerWord.endsWith("y") && lowerWord.length() > 1) {
+            char beforeY = lowerWord.charAt(lowerWord.length() - 2);
+            if (!isVowel(beforeY)) {
+                return lowerWord.substring(0, lowerWord.length() - 1) + "ies";
+            }
+        }
+        
+        // Words ending in 's', 'ss', 'sh', 'ch', 'x', 'z': add 'es'
+        if (lowerWord.endsWith("s") || lowerWord.endsWith("ss") || 
+            lowerWord.endsWith("sh") || lowerWord.endsWith("ch") || 
+            lowerWord.endsWith("x") || lowerWord.endsWith("z")) {
+            // Special case for words ending in 'z': double the 'z' then add 'es'
+            if (lowerWord.endsWith("z") && !lowerWord.endsWith("zz")) {
+                return lowerWord + "zes";
+            }
+            return lowerWord + "es";
+        }
+        
+        // Words ending in 'f' or 'fe': change to 'ves'
+        if (lowerWord.endsWith("f")) {
+            return lowerWord.substring(0, lowerWord.length() - 1) + "ves";
+        }
+        if (lowerWord.endsWith("fe")) {
+            return lowerWord.substring(0, lowerWord.length() - 2) + "ves";
+        }
+        
+        // Words ending in 'o' preceded by a consonant: add 'es'
+        if (lowerWord.endsWith("o") && lowerWord.length() > 1) {
+            char beforeO = lowerWord.charAt(lowerWord.length() - 2);
+            if (!isVowel(beforeO)) {
+                // Common exceptions that just add 's'
+                if (lowerWord.equals("photo") || lowerWord.equals("piano") || 
+                    lowerWord.equals("halo") || lowerWord.equals("soprano")) {
+                    return lowerWord + "s";
+                }
+                return lowerWord + "es";
+            }
+        }
+        
+        // Default: just add 's'
+        return lowerWord + "s";
+    }
+    
+    private boolean isVowel(char c) {
+        return "aeiou".indexOf(Character.toLowerCase(c)) != -1;
     }
 
     private String generateRootPomXmlContent(ProjectRequest request, String effectiveVersion) {
@@ -1644,6 +1723,8 @@ public class %s extends %s<%s> {
                 if (aggregateRoots.contains(table)) {
                     generateRepositoryInterface(table, basePackageName, appServiceMainJava);
                     generateCommandClasses(table, basePackageName, appServiceMainJava, conn, schema, detailedForeignKeys, aggregateRoots, columnToEnumMap, domainMapperName, projectRequest);
+                    generateApplicationServiceInterface(table, basePackageName, appServiceMainJava);
+                    generateApplicationServiceImplementation(table, basePackageName, appServiceMainJava, domainMapperName, projectRequest);
                 }
             }
 
@@ -3150,10 +3231,8 @@ public interface %sJpaRepository extends JpaRepository<%sEntity, UUID> {
             
             StringBuilder constructorParams = new StringBuilder();
             
-            // Add ID parameter first if it wasn't in the database columns (generated ID)
-            if (!hasIdColumn) {
-                constructorParams.append("            new " + idClassName + "(entity.getId()),\n");
-            }
+            // Always add ID parameter first for all domain entities
+            constructorParams.append("            new " + idClassName + "(entity.getId()),\n");
             
             for (Map<String, String> column : columns) {
                 String columnName = column.get("name");
@@ -3168,7 +3247,8 @@ public interface %sJpaRepository extends JpaRepository<%sEntity, UUID> {
                 String columnIdentifier = table + "." + columnName;
                 
                 if (columnName.equals("id")) {
-                    constructorParams.append("            new " + idClassName + "(entity." + getterName + "()),\n");
+                    // Skip ID column since we already added it at the beginning
+                    continue;
                 } else if (tableForeignKeys.containsKey(columnName)) {
                     // Foreign key field
                     String referencedTable = tableForeignKeys.get(columnName).getPkTableName();
@@ -3245,5 +3325,335 @@ public class %s {
 
 %s}
 """, basePackageName, importStatements.toString(), mapperClassName, methods.toString());
+    }
+
+    private void generateRestControllers(EnvironmentalCredentialsRequest envRequest, Path restDir, String basePackageName) throws IOException {
+        Set<String> aggregateRoots = determineAggregateRootsFromUserSelection(envRequest.getTableEntityTypes());
+        for (String aggregateRoot : aggregateRoots) {
+            String entityName = snakeKebabCaseToPascalCase(aggregateRoot);
+            String controllerName = entityName + "Controller";
+            String controllerContent = generateRestControllerContent(entityName, aggregateRoot, basePackageName);
+            Files.writeString(Paths.get(restDir.toString(), controllerName + ".java"), controllerContent);
+        }
+    }
+
+    private String generateRestControllerContent(String entityName, String tableName, String basePackageName) {
+        String camelCaseEntityName = firstCharToLowerCase(entityName);
+        String entityPackageName = camelCaseEntityName.toLowerCase(); // All lowercase for package names
+        String pluralPath = pluralize(camelCaseEntityName);
+        String appServiceName = entityName + "ApplicationService";
+        String appServiceVarName = firstCharToLowerCase(appServiceName);
+        
+        // Create parameter array to debug count
+        Object[] params = {
+            basePackageName, // package
+            basePackageName, appServiceName, // import ApplicationService
+            basePackageName, entityPackageName, entityName, // import Create Command
+            basePackageName, entityPackageName, entityName, // import Create Response
+            basePackageName, entityPackageName, entityName, // import Update Command
+            basePackageName, entityPackageName, entityName, // import Update Response
+            basePackageName, entityPackageName, entityName, // import Delete Response
+            basePackageName, entityPackageName, entityName, // import GetById Response
+            basePackageName, entityPackageName, entityName, // import Query
+            basePackageName, entityPackageName, entityName, // import Query Response
+            basePackageName, // import BaseQueryResponse
+            basePackageName, // import ResultObject
+            pluralPath, entityName + "Controller", // RequestMapping and class name
+            appServiceName, appServiceVarName, // field declaration
+            entityName + "Controller", appServiceName, appServiceVarName, // constructor name and parameters  
+            appServiceVarName, appServiceVarName, // constructor assignment
+            entityName, entityName, entityName, // create method
+            camelCaseEntityName, entityName, // create method log
+            appServiceVarName, entityName, // create method call
+            entityName, // query method response type
+            entityName, camelCaseEntityName, // query method parameters
+            pluralPath, camelCaseEntityName, // query method log
+            appServiceVarName, camelCaseEntityName, // query method call
+            entityName, // getById method
+            camelCaseEntityName, // getById method log
+            appServiceVarName, // getById method call
+            entityName, // update method
+            entityName, entityName, // update method parameters
+            camelCaseEntityName, entityName, // update method log
+            entityName, // update method setId
+            appServiceVarName, entityName, // update method call
+            entityName, // delete method
+            camelCaseEntityName, // delete method log
+            appServiceVarName // delete method call
+        };
+        
+        return String.format("""
+package %s.application.rest;
+
+import %s.domain.applicationservice.ports.input.service.%s;
+import %s.domain.applicationservice.commands.%s.create.Create%sCommand;
+import %s.domain.applicationservice.commands.%s.create.Create%sResponse;
+import %s.domain.applicationservice.commands.%s.update.Update%sCommand;
+import %s.domain.applicationservice.commands.%s.update.Update%sResponse;
+import %s.domain.applicationservice.commands.%s.delete.Delete%sResponse;
+import %s.domain.applicationservice.queries.%s.getbyid.GetById%sResponse;
+import %s.domain.applicationservice.queries.%s.query.%sQuery;
+import %s.domain.applicationservice.queries.%s.query.%sQueryResponse;
+import %s.domain.core.payload.BaseQueryResponse;
+import %s.application.payload.ResultObject;
+
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
+
+@Slf4j
+@RestController
+@RequestMapping(value = "/api/v1/%s")
+public class %s {
+
+    private final %s %s;
+
+    public %s(%s %s) {
+        this.%s = %s;
+    }
+
+    @PostMapping
+    public ResponseEntity<ResultObject<Create%sResponse>> create(@RequestBody Create%sCommand create%sCommand) {
+        log.info("Creating %s with data: {}", create%sCommand);
+        return ResponseEntity.ok(ResultObject.success(%s.create(create%sCommand)));
+    }
+
+    @PostMapping("query")
+    public ResponseEntity<ResultObject<BaseQueryResponse<%sQueryResponse>>> query(
+            @RequestBody %sQuery %sQuery) {
+        log.info("Query %s : {}", %sQuery);
+        return ResponseEntity.ok(ResultObject.success(%s.query(%sQuery)));
+    }
+
+    @GetMapping("{id}")
+    public ResponseEntity<ResultObject<GetById%sResponse>> getById(@PathVariable @NotNull @NotEmpty String id) {
+        log.info("Getting %s by id: {}", id);
+        return ResponseEntity.ok(ResultObject.success(%s.getById(UUID.fromString(id))));
+    }
+
+    @PutMapping("{id}")
+    public ResponseEntity<ResultObject<Update%sResponse>> update(@PathVariable @NotNull @NotEmpty String id,
+                                                                             @RequestBody Update%sCommand update%sCommand) {
+        log.info("Updating %s by id: {} with data: {}", id, update%sCommand);
+        update%sCommand.setId(UUID.fromString(id));
+        return ResponseEntity.ok(ResultObject.success(%s.update(update%sCommand)));
+    }
+
+    @DeleteMapping("{id}")
+    public ResponseEntity<ResultObject<Delete%sResponse>> delete(@PathVariable @NotNull @NotEmpty String id,
+                                                                             @RequestHeader("X-Updated-By") @NotNull @NotEmpty String updatedBy) {
+        log.info("Deleting %s by id: {}", id);
+        return ResponseEntity.ok(ResultObject.success(%s.delete(UUID.fromString(id), UUID.fromString(updatedBy))));
+    }
+}
+""", params);
+    }
+
+    private void generateApplicationServiceInterface(String tableName, String basePackageName, Path appServiceMainJava) throws IOException {
+        String entityName = snakeKebabCaseToPascalCase(tableName);
+        String interfaceName = entityName + "ApplicationService";
+        String camelCaseEntityName = firstCharToLowerCase(entityName);
+        String entityPackageName = camelCaseEntityName.toLowerCase(); // All lowercase for package names
+        
+        Path interfaceDir = Paths.get(appServiceMainJava.toString(), "ports", "input", "service");
+        Files.createDirectories(interfaceDir);
+        
+        String interfaceContent = String.format("""
+package %s.domain.applicationservice.ports.input.service;
+
+import %s.domain.applicationservice.commands.%s.create.Create%sCommand;
+import %s.domain.applicationservice.commands.%s.create.Create%sResponse;
+import %s.domain.applicationservice.commands.%s.update.Update%sCommand;
+import %s.domain.applicationservice.commands.%s.update.Update%sResponse;
+import %s.domain.applicationservice.commands.%s.delete.Delete%sResponse;
+import %s.domain.applicationservice.queries.%s.getbyid.GetById%sResponse;
+import %s.domain.applicationservice.queries.%s.query.%sQuery;
+import %s.domain.applicationservice.queries.%s.query.%sQueryResponse;
+import %s.domain.core.payload.BaseQueryResponse;
+import jakarta.validation.Valid;
+
+import java.util.UUID;
+
+public interface %s {
+
+    Create%sResponse create(@Valid Create%sCommand create%sCommand);
+
+    Update%sResponse update(@Valid Update%sCommand update%sCommand);
+
+    Delete%sResponse delete(UUID id, UUID updatedBy);
+
+    GetById%sResponse getById(UUID id);
+
+    BaseQueryResponse<%sQueryResponse> query(@Valid %sQuery %sQuery);
+}
+""",
+            basePackageName, // package
+            basePackageName, entityPackageName, entityName, // import Create Command
+            basePackageName, entityPackageName, entityName, // import Create Response
+            basePackageName, entityPackageName, entityName, // import Update Command
+            basePackageName, entityPackageName, entityName, // import Update Response
+            basePackageName, entityPackageName, entityName, // import Delete Response
+            basePackageName, entityPackageName, entityName, // import GetById Response
+            basePackageName, entityPackageName, entityName, // import Query
+            basePackageName, entityPackageName, entityName, // import Query Response
+            basePackageName, // import BaseQueryResponse
+            interfaceName, // interface name
+            entityName, entityName, entityName, // create method
+            entityName, entityName, entityName, // update method
+            entityName, // delete method
+            entityName, // getById method
+            entityName, entityName, camelCaseEntityName // query method
+        );
+        
+        Files.writeString(Paths.get(interfaceDir.toString(), interfaceName + ".java"), interfaceContent);
+    }
+
+    private void generateApplicationServiceImplementation(String tableName, String basePackageName, Path appServiceMainJava, String domainMapperName, ProjectRequest projectRequest) throws IOException {
+        String entityName = snakeKebabCaseToPascalCase(tableName);
+        String implName = entityName + "ApplicationServiceImpl";
+        String interfaceName = entityName + "ApplicationService";
+        String camelCaseEntityName = firstCharToLowerCase(entityName);
+        String entityPackageName = camelCaseEntityName.toLowerCase(); // All lowercase for package names
+        
+        Path implDir = Paths.get(appServiceMainJava.toString(), "ports", "input", "service", "impl");
+        Files.createDirectories(implDir);
+        
+        String implContent = String.format("""
+package %s.domain.applicationservice.ports.input.service.impl;
+
+import %s.domain.applicationservice.commands.%s.create.%sCreateCommandHandler;
+import %s.domain.applicationservice.commands.%s.create.Create%sCommand;
+import %s.domain.applicationservice.commands.%s.create.Create%sResponse;
+import %s.domain.applicationservice.commands.%s.update.%sUpdateCommandHandler;
+import %s.domain.applicationservice.commands.%s.update.Update%sCommand;
+import %s.domain.applicationservice.commands.%s.update.Update%sResponse;
+import %s.domain.applicationservice.commands.%s.delete.%sDeleteCommandHandler;
+import %s.domain.applicationservice.commands.%s.delete.Delete%sResponse;
+import %s.domain.applicationservice.queries.%s.getbyid.%sGetByIdQueryHandler;
+import %s.domain.applicationservice.queries.%s.getbyid.GetById%sResponse;
+import %s.domain.applicationservice.queries.%s.query.%sQueryHandler;
+import %s.domain.applicationservice.queries.%s.query.%sQuery;
+import %s.domain.applicationservice.queries.%s.query.%sQueryResponse;
+import %s.domain.applicationservice.mapper.%s;
+import %s.domain.applicationservice.ports.input.service.%s;
+import %s.domain.core.entity.%sDomainEntity;
+import %s.domain.core.payload.BaseQueryResponse;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.validation.annotation.Validated;
+
+import java.util.UUID;
+
+@Slf4j
+@Validated
+@Service
+public class %s implements %s {
+
+    private final %sCreateCommandHandler %sCreateCommandHandler;
+    private final %sUpdateCommandHandler %sUpdateCommandHandler;
+    private final %sDeleteCommandHandler %sDeleteCommandHandler;
+    private final %sGetByIdQueryHandler %sGetByIdQueryHandler;
+    private final %sQueryHandler %sQueryHandler;
+    private final %s %s;
+
+    public %s(%sCreateCommandHandler %sCreateCommandHandler,
+                                %sUpdateCommandHandler %sUpdateCommandHandler,
+                                %sDeleteCommandHandler %sDeleteCommandHandler,
+                                %sGetByIdQueryHandler %sGetByIdQueryHandler,
+                                %sQueryHandler %sQueryHandler,
+                                %s %s) {
+        this.%sCreateCommandHandler = %sCreateCommandHandler;
+        this.%sUpdateCommandHandler = %sUpdateCommandHandler;
+        this.%sDeleteCommandHandler = %sDeleteCommandHandler;
+        this.%sGetByIdQueryHandler = %sGetByIdQueryHandler;
+        this.%sQueryHandler = %sQueryHandler;
+        this.%s = %s;
+    }
+
+    @Override
+    public Create%sResponse create(Create%sCommand create%sCommand) {
+        %sDomainEntity created%s = %sCreateCommandHandler.create%s(create%sCommand);
+        return %s.%sDomainEntityToCreate%sResponse(created%s);
+    }
+
+    @Override
+    public Update%sResponse update(Update%sCommand update%sCommand) {
+        %sDomainEntity updated%s = %sUpdateCommandHandler.update%s(update%sCommand);
+        return %s.%sDomainEntityToUpdate%sResponse(updated%s);
+    }
+
+    @Override
+    public Delete%sResponse delete(UUID id, UUID updatedBy) {
+        return %sDeleteCommandHandler.delete(id, updatedBy);
+    }
+
+    @Override
+    public GetById%sResponse getById(UUID id) {
+        return %sGetByIdQueryHandler.getById(id);
+    }
+
+    @Override
+    public BaseQueryResponse<%sQueryResponse> query(%sQuery %sQuery) {
+        return %sQueryHandler.query(%sQuery);
+    }
+}
+""",
+            basePackageName, // package
+            basePackageName, entityPackageName, entityName, // import Create Handler
+            basePackageName, entityPackageName, entityName, // import Create Command
+            basePackageName, entityPackageName, entityName, // import Create Response
+            basePackageName, entityPackageName, entityName, // import Update Handler
+            basePackageName, entityPackageName, entityName, // import Update Command
+            basePackageName, entityPackageName, entityName, // import Update Response
+            basePackageName, entityPackageName, entityName, // import Delete Handler
+            basePackageName, entityPackageName, entityName, // import Delete Response
+            basePackageName, entityPackageName, entityName, // import GetById Handler
+            basePackageName, entityPackageName, entityName, // import GetById Response
+            basePackageName, entityPackageName, entityName, // import Query Handler
+            basePackageName, entityPackageName, entityName, // import Query
+            basePackageName, entityPackageName, entityName, // import Query Response
+            basePackageName, domainMapperName, // import Mapper
+            basePackageName, interfaceName, // import Interface
+            basePackageName, entityName, // import Domain Entity
+            basePackageName, // import BaseQueryResponse
+            implName, interfaceName, // class declaration
+            entityName, camelCaseEntityName, // Create handler field
+            entityName, camelCaseEntityName, // Update handler field
+            entityName, camelCaseEntityName, // Delete handler field
+            entityName, camelCaseEntityName, // GetById handler field
+            entityName, camelCaseEntityName, // Query handler field
+            domainMapperName, firstCharToLowerCase(domainMapperName), // Mapper field
+            implName, // constructor name
+            entityName, camelCaseEntityName, // constructor param 1
+            entityName, camelCaseEntityName, // constructor param 2
+            entityName, camelCaseEntityName, // constructor param 3
+            entityName, camelCaseEntityName, // constructor param 4
+            entityName, camelCaseEntityName, // constructor param 5
+            domainMapperName, firstCharToLowerCase(domainMapperName), // constructor param 6
+            camelCaseEntityName, camelCaseEntityName, // constructor assignment 1
+            camelCaseEntityName, camelCaseEntityName, // constructor assignment 2
+            camelCaseEntityName, camelCaseEntityName, // constructor assignment 3
+            camelCaseEntityName, camelCaseEntityName, // constructor assignment 4
+            camelCaseEntityName, camelCaseEntityName, // constructor assignment 5
+            firstCharToLowerCase(domainMapperName), firstCharToLowerCase(domainMapperName), // constructor assignment 6
+            entityName, entityName, entityName, // create method
+            entityName, entityName, camelCaseEntityName, entityName, entityName, // create method body
+            firstCharToLowerCase(domainMapperName), camelCaseEntityName, entityName, entityName, // create method mapper call
+            entityName, entityName, entityName, // update method
+            entityName, entityName, camelCaseEntityName, entityName, entityName, // update method body
+            firstCharToLowerCase(domainMapperName), camelCaseEntityName, entityName, entityName, // update method mapper call
+            entityName, // delete method
+            camelCaseEntityName, // delete method body
+            entityName, // getById method
+            camelCaseEntityName, // getById method body
+            entityName, entityName, camelCaseEntityName, // query method
+            camelCaseEntityName, camelCaseEntityName // query method body
+        );
+        
+        Files.writeString(Paths.get(implDir.toString(), implName + ".java"), implContent);
     }
 }

@@ -1000,6 +1000,8 @@ spring:
 package %s.application.exception;
 
 import %s.domain.core.exception.%s;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -1010,6 +1012,7 @@ import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.ResponseStatus;
 
 import java.net.URI;
+import java.util.List;
 
 @Slf4j
 @ControllerAdvice
@@ -1032,6 +1035,22 @@ public class %s {
         log.error(exception.getMessage(), exception);
         ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, exception.getMessage());
         problemDetail.setType(URI.create("https://www.rfc-editor.org/rfc/rfc9110#status.404"));
+        return problemDetail;
+    }
+
+    @ResponseBody
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ProblemDetail handleConstraintViolation(ConstraintViolationException exception) {
+        log.error(exception.getMessage(), exception);
+        List<String> errorMessages = exception.getConstraintViolations()
+                .stream()
+                .map(constraintViolation ->
+                    constraintViolation.getPropertyPath().toString() +
+                    ": " + constraintViolation.getMessage())
+                .toList();
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, errorMessages.toString());
+        problemDetail.setType(URI.create("https://www.rfc-editor.org/rfc/rfc9110#status.400"));
         return problemDetail;
     }
 }

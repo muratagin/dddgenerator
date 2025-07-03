@@ -3723,8 +3723,13 @@ public class %s implements %s {
         
         // Get columns to generate proper request bodies
         List<Map<String, String>> columns = getColumnsForTable(conn, schema, tableName);
-        String createRequestBody = generateCreateRequestBody(columns);
-        String updateRequestBody = generateUpdateRequestBody(columns);
+        
+        // Get additional data needed for accurate request body generation
+        Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, schema);
+        Map<String, String> columnToEnumMap = scanForEnumColumns(conn, schema);
+        
+        String createRequestBody = generateCreateRequestBody(columns, tableName, detailedForeignKeys, columnToEnumMap);
+        String updateRequestBody = generateUpdateRequestBody(columns, tableName, detailedForeignKeys, columnToEnumMap);
         String queryRequestBody = generateQueryRequestBody(columns);
         
         return String.format("""
@@ -3775,27 +3780,38 @@ GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=name,asc
         );
     }
 
-    private String generateCreateRequestBody(List<Map<String, String>> columns) {
+    private String generateCreateRequestBody(List<Map<String, String>> columns, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Map<String, String> columnToEnumMap) {
         if (columns == null || columns.isEmpty()) {
-            return "{\n  \"name\": \"Sample Name\",\n  \"description\": \"Sample description\"\n}";
+            return "{\n  \"createdBy\": \"0197b76c-7cce-71be-a0f2-949c6f4ff9f7\",\n  \"name\": \"Sample Name\",\n  \"description\": \"Sample description\"\n}";
         }
         
         StringBuilder body = new StringBuilder("{\n");
         boolean first = true;
         
+        Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys != null ? 
+            detailedForeignKeys.getOrDefault(currentTable, new HashMap<>()) : new HashMap<>();
+        
+        // Check if createdBy field already exists in database columns
+        boolean hasCreatedByColumn = columns.stream()
+            .anyMatch(column -> "created_by".equals(column.get("name")));
+        
+        // Add createdBy field only if it doesn't exist in database columns
+        if (!hasCreatedByColumn) {
+            body.append("  \"createdBy\": \"0197b76c-7cce-71be-a0f2-949c6f4ff9f7\"");
+            first = false;
+        }
+        
         for (Map<String, String> column : columns) {
-            String columnName = column.get("COLUMN_NAME");
-            String dataType = column.get("DATA_TYPE");
+            String columnName = column.get("name") != null ? column.get("name") : column.get("COLUMN_NAME");
+            String dataType = column.get("type") != null ? column.get("type") : column.get("DATA_TYPE");
             
             // Skip null columns or auto-generated columns
             if (columnName == null || dataType == null) {
                 continue;
             }
             
-            if (columnName.equalsIgnoreCase("id") || 
-                columnName.toLowerCase().contains("created") || 
-                columnName.toLowerCase().contains("updated") ||
-                columnName.toLowerCase().contains("version")) {
+            // Skip ID column like in Command DTO generation
+            if (columnName.equalsIgnoreCase("id")) {
                 continue;
             }
             
@@ -3805,7 +3821,29 @@ GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=name,asc
             first = false;
             
             String camelCaseColumnName = snakeCaseToCamelCase(columnName);
-            String sampleValue = generateSampleValue(dataType, columnName);
+            
+            // Handle Java keywords like in Command DTO generation
+            if (JAVA_KEYWORDS.contains(camelCaseColumnName)) {
+                // This would need the entityName, but for HTTP requests we'll keep it simple
+                camelCaseColumnName = camelCaseColumnName + "Value";
+            }
+            
+            String columnIdentifier = currentTable + "." + columnName;
+            String sampleValue;
+            
+            // Check if this column is an enum
+            if (columnToEnumMap != null && columnToEnumMap.containsKey(columnIdentifier)) {
+                sampleValue = generateEnumSampleValue(columnName);
+            }
+            // Check if this column is a foreign key
+            else if (tableForeignKeys.containsKey(columnName)) {
+                sampleValue = "\"0197b76c-7cce-71be-a0f2-949c6f4ff9f7\"";
+            }
+            // Generate sample value based on data type and column name
+            else {
+                sampleValue = generateSampleValue(dataType, columnName);
+            }
+            
             body.append("  \"").append(camelCaseColumnName).append("\": ").append(sampleValue);
         }
         
@@ -3819,24 +3857,27 @@ GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=name,asc
         return body.toString();
     }
 
-    private String generateUpdateRequestBody(List<Map<String, String>> columns) {
+    private String generateUpdateRequestBody(List<Map<String, String>> columns, String currentTable, Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys, Map<String, String> columnToEnumMap) {
         if (columns == null || columns.isEmpty()) {
-            return "{\n  \"id\": \"123e4567-e89b-12d3-a456-426614174000\",\n  \"name\": \"Updated Name\",\n  \"description\": \"Updated description\"\n}";
+            return "{\n  \"id\": \"0197b76c-7cce-71be-a0f2-949c6f4ff9f7\",\n  \"name\": \"Updated Name\",\n  \"description\": \"Updated description\"\n}";
         }
         
-        // Update body is similar to create but may include ID
         StringBuilder body = new StringBuilder("{\n");
         boolean first = true;
         
+        Map<String, ForeignKeyInfo> tableForeignKeys = detailedForeignKeys != null ? 
+            detailedForeignKeys.getOrDefault(currentTable, new HashMap<>()) : new HashMap<>();
+        
         for (Map<String, String> column : columns) {
-            String columnName = column.get("COLUMN_NAME");
-            String dataType = column.get("DATA_TYPE");
+            String columnName = column.get("name") != null ? column.get("name") : column.get("COLUMN_NAME");
+            String dataType = column.get("type") != null ? column.get("type") : column.get("DATA_TYPE");
             
             // Skip null columns or auto-generated columns except ID for updates
             if (columnName == null || dataType == null) {
                 continue;
             }
             
+            // Skip created columns but include ID for updates
             if (columnName.toLowerCase().contains("created") || 
                 columnName.toLowerCase().contains("version")) {
                 continue;
@@ -3848,15 +3889,37 @@ GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=name,asc
             first = false;
             
             String camelCaseColumnName = snakeCaseToCamelCase(columnName);
-            String sampleValue = columnName.equalsIgnoreCase("id") ? 
-                "\"123e4567-e89b-12d3-a456-426614174000\"" : 
-                generateSampleValue(dataType, columnName);
+            
+            // Handle Java keywords like in Command DTO generation
+            if (JAVA_KEYWORDS.contains(camelCaseColumnName)) {
+                camelCaseColumnName = camelCaseColumnName + "Value";
+            }
+            
+            String columnIdentifier = currentTable + "." + columnName;
+            String sampleValue;
+            
+            if (columnName.equalsIgnoreCase("id")) {
+                sampleValue = "\"0197b76c-7cce-71be-a0f2-949c6f4ff9f7\"";
+            }
+            // Check if this column is an enum
+            else if (columnToEnumMap != null && columnToEnumMap.containsKey(columnIdentifier)) {
+                sampleValue = generateEnumSampleValue(columnName);
+            }
+            // Check if this column is a foreign key
+            else if (tableForeignKeys.containsKey(columnName)) {
+                sampleValue = "\"0197b76c-7cce-71be-a0f2-949c6f4ff9f7\"";
+            }
+            // Generate sample value based on data type and column name
+            else {
+                sampleValue = generateSampleValue(dataType, columnName);
+            }
+            
             body.append("  \"").append(camelCaseColumnName).append("\": ").append(sampleValue);
         }
         
         // If no columns were added, add default fallback
         if (first) {
-            body.append("  \"id\": \"123e4567-e89b-12d3-a456-426614174000\",\n");
+            body.append("  \"id\": \"0197b76c-7cce-71be-a0f2-949c6f4ff9f7\",\n");
             body.append("  \"name\": \"Updated Name\",\n");
             body.append("  \"description\": \"Updated description\"");
         }
@@ -3912,6 +3975,47 @@ GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=name,asc
         return body.toString();
     }
 
+    private Map<String, String> scanForEnumColumns(Connection conn, String schema) throws SQLException {
+        Map<String, String> columnToEnumMap = new HashMap<>();
+        List<String> tables = getTables(conn, schema);
+        
+        for (String table : tables) {
+            List<Map<String, String>> columns = getColumnsForTable(conn, schema, table);
+            for (Map<String, String> column : columns) {
+                String comment = column.get("comment");
+                if (comment != null && !comment.isBlank() && comment.startsWith("Enum:")) {
+                    // Extract enum class name from comment format: Enum:EnumClass{...}
+                    String enumName = comment.substring(5); // Remove "Enum:" prefix
+                    if (enumName.contains("{")) {
+                        enumName = enumName.substring(0, enumName.indexOf("{"));
+                    }
+                    // Create fully qualified enum class name
+                    String enumFqn = "com.muratagin.dddgenerator.domain.core.valueobject." + enumName;
+                    columnToEnumMap.put(table + "." + column.get("name"), enumFqn);
+                }
+            }
+        }
+        
+        return columnToEnumMap;
+    }
+
+    private String generateEnumSampleValue(String columnName) {
+        String lowerColumnName = columnName.toLowerCase();
+        
+        // Generate appropriate enum values based on column name
+        if (lowerColumnName.contains("type")) {
+            return "0";  // First enum value (0-indexed)
+        } else if (lowerColumnName.contains("status")) {
+            return "0";
+        } else if (lowerColumnName.contains("level")) {
+            return "0";
+        } else if (lowerColumnName.contains("stage")) {
+            return "0";
+        } else {
+            return "0";  // Default to first enum value
+        }
+    }
+
     private String generateSampleValue(String dataType, String columnName) {
         if (dataType == null || columnName == null) {
             return "\"Sample Value\"";
@@ -3923,26 +4027,57 @@ GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=name,asc
             if (lowerColumnName.contains("email")) {
                 return "\"user@example.com\"";
             } else if (lowerColumnName.contains("name")) {
-                return "\"Sample " + snakeKebabCaseToPascalCase(columnName) + "\"";
+                // Generate more realistic sample names based on context
+                if (lowerColumnName.contains("first")) {
+                    return "\"John\"";
+                } else if (lowerColumnName.contains("last")) {
+                    return "\"Doe\"";
+                } else if (lowerColumnName.contains("company") || lowerColumnName.contains("organization")) {
+                    return "\"Acme Corp\"";
+                } else if (lowerColumnName.contains("institution")) {
+                    return "\"Hacettepe\"";
+                } else {
+                    return "\"Sample " + snakeKebabCaseToPascalCase(columnName) + "\"";
+                }
             } else if (lowerColumnName.contains("description")) {
                 return "\"Sample description\"";
             } else if (lowerColumnName.contains("code")) {
                 return "\"SAMPLE_CODE\"";
+            } else if (lowerColumnName.contains("country")) {
+                return "\"TR\"";
+            } else if (lowerColumnName.contains("city")) {
+                return "\"Istanbul\"";
+            } else if (lowerColumnName.contains("address")) {
+                return "\"123 Main Street\"";
+            } else if (lowerColumnName.contains("phone")) {
+                return "\"+90-555-123-4567\"";
             } else {
                 return "\"Sample Value\"";
             }
         } else if (dataType.contains("INT") || dataType.contains("NUMERIC") || dataType.contains("DECIMAL")) {
-            if (lowerColumnName.contains("price") || lowerColumnName.contains("amount")) {
+            if (lowerColumnName.contains("price") || lowerColumnName.contains("amount") || lowerColumnName.contains("cost")) {
                 return "99.99";
+            } else if (lowerColumnName.contains("year") || lowerColumnName.contains("established")) {
+                return "2025";
+            } else if (lowerColumnName.contains("age")) {
+                return "25";
+            } else if (lowerColumnName.contains("count") || lowerColumnName.contains("quantity")) {
+                return "10";
+            } else if (lowerColumnName.contains("level") || lowerColumnName.contains("accreditation")) {
+                return "0";  // For enum-like integer fields
             } else {
                 return "123";
             }
         } else if (dataType.contains("BOOLEAN") || dataType.contains("BIT")) {
-            return "true";
+            if (lowerColumnName.contains("deleted") || lowerColumnName.contains("inactive")) {
+                return "true";  // Match the example given
+            } else {
+                return "true";
+            }
         } else if (dataType.contains("DATE") || dataType.contains("TIME")) {
             return "\"2024-01-01T10:00:00\"";
         } else if (dataType.contains("UUID")) {
-            return "\"123e4567-e89b-12d3-a456-426614174000\"";
+            return "\"0197b76c-7cce-71be-a0f2-949c6f4ff9f7\"";
         } else {
             return "\"Sample Value\"";
         }
@@ -3980,8 +4115,13 @@ GET http://localhost:%s/api/v1/%s?page=0&size=10&sort=name,asc
             
             // Get columns to generate proper request bodies
             List<Map<String, String>> columns = getColumnsForTable(conn, schema, tableName);
-            String createRequestBody = generateCreateRequestBody(columns).replace("\"", "\\\"").replace("\n", "\\n");
-            String updateRequestBody = generateUpdateRequestBody(columns).replace("\"", "\\\"").replace("\n", "\\n");
+            
+            // Get additional data needed for accurate request body generation
+            Map<String, Map<String, ForeignKeyInfo>> detailedForeignKeys = getDetailedForeignKeys(conn, schema);
+            Map<String, String> columnToEnumMap = scanForEnumColumns(conn, schema);
+            
+            String createRequestBody = generateCreateRequestBody(columns, tableName, detailedForeignKeys, columnToEnumMap).replace("\"", "\\\"").replace("\n", "\\n");
+            String updateRequestBody = generateUpdateRequestBody(columns, tableName, detailedForeignKeys, columnToEnumMap).replace("\"", "\\\"").replace("\n", "\\n");
             String queryRequestBody = generateQueryRequestBody(columns).replace("\"", "\\\"").replace("\n", "\\n");
             
             items.append(String.format("""

@@ -96,18 +96,21 @@ your-project-name/
 │   └── your-project-name-domain-core/    # Core domain logic
 │       └── src/main/java/
 │           ├── entity/                   # Domain entities
-│           ├── valueobject/              # Value objects  
+│           ├── valueobject/              # Value objects
 │           └── exception/                # Domain exceptions
 ├── your-project-name-application-service/ # Application services
 │   └── src/main/java/
-│       ├── commands/                     # Command handlers (CQRS)
-│       └── queries/                      # Query handlers (CQRS)
+│       ├── mapper/                       # Domain mappers
+│       ├── ports/                        # Repository interfaces (ports)
+│       ├── queries/                      # Query handlers (CQRS)
+│       └── commands/                     # Command handlers (CQRS)
 ├── your-project-name-infrastructure/     # Infrastructure layer
 │   ├── your-project-name-persistence/    # Data persistence
-│   └── src/main/java/
-│       ├── entity/                       # JPA entities
-│       ├── repository/                   # Repository interfaces
-│       └── adapter/                      # Repository implementations
+│   │   └── src/main/java/
+│   │       ├── mapper/                   # Persistence mappers
+│   │       ├── entity/                   # JPA entities
+│   │       ├── adapter/                  # Repository implementations (adapters)
+│   │       └── repository/               # JPA repositories
 ├── your-project-name-application/        # Application layer
 │   └── src/main/java/
 │       ├── rest/                         # REST controllers
@@ -129,15 +132,17 @@ your-project-name/
 - **Value Objects**: Immutable value types (enums, constants)
 - **Domain Exceptions**: Custom business rule violations
 
-### Application Layer
+### Application Service Layer
 - **Command Handlers**: Process write operations (Create, Update, Delete)
 - **Query Handlers**: Process read operations (Get, Search)
+- **Repository Ports**: Domain contracts (interfaces) for data access
 - **Domain Mappers**: Convert between domain and persistence models
 
 ### Infrastructure Layer
 - **JPA Entities**: Database-mapped entities with proper annotations
-- **Repository Interfaces**: Domain repository contracts
-- **Repository Adapters**: JPA repository implementations
+- **Repository Adapters**: Repository implementations (adapters for domain ports)
+- **JPA Repositories**: Spring Data JPA repositories
+- **Persistence Mappers**: Convert between JPA and domain entities
 
 ### Application Layer (Web)
 - **REST Controllers**: HTTP endpoints for aggregate roots
